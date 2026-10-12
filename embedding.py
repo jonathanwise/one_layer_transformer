@@ -3,7 +3,7 @@
 import torch
 
 
-def embedding(model, x: torch.Tensor) -> torch.Tensor:
+def embedding(self, x: torch.Tensor) -> torch.Tensor:
     """Return x0 [batch, context, model width] from one-hot x.
 
     Multiply x [batch, context, vocab] by W_E [vocab, model width],
