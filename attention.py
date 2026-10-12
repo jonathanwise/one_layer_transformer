@@ -5,7 +5,8 @@ import torch
 
 
 def attention(self, x0: torch.Tensor) -> torch.Tensor:
-    """Return x1 of shape [batch, context, model width] from embedded input x0.
+    """Return x1 of shape [batch, context, model width] from embedded input 
+    x0 of same shape.
 
     For each of the four heads h, compute Q[h]=x0*W_Q[h], K[h]=x0*W_K[h],
     V[h]=x0*W_V[h], score matrix S=Q*K^t, and attention weights A=softmax(S).
