@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MLP Neuron Viewer — Grokked mod-43</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+#top-bar { padding: 10px 20px; background: #16213e; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+#top-bar h1 { font-size: 16px; font-weight: 600; color: #ccc; }
+#top-bar span { color: #888; }
+#neuron-nav { display: flex; align-items: center; gap: 8px; }
+#neuron-nav button, .ctrl-btn { background: #0f3460; color: #e0e0e0; border: 1px solid #444; padding: 4px 12px; cursor: pointer; border-radius: 3px; font-family: inherit; }
+#neuron-nav button:hover, .ctrl-btn:hover { background: #1a5276; }
+#neuron-id { font-size: 18px; font-weight: bold; color: #e94560; min-width: 80px; text-align: center; }
+.mode-select { display: flex; gap: 4px; }
+.mode-btn, .basis-btn { background: #0f3460; color: #888; border: 1px solid #444; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 12px; }
+.mode-btn:hover, .basis-btn:hover { background: #1a5276; }
+.mode-btn.active, .basis-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+
+#main { display: flex; padding: 15px; gap: 15px; }
+#left { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+#left > * { max-width: 430px; }
+#heatmap-canvas, #heatmap-canvas2 { width: 430px; height: 430px; }
+#heatmap-label { color: #aaa; font-size: 12px; text-align: center; }
+#heatmap-canvas { cursor: crosshair; image-rendering: pixelated; border: 1px solid #333; }
+#hover-info { color: #aaa; font-size: 12px; text-align: center; min-height: 18px; }
+
+#right { display: flex; flex-direction: column; gap: 15px; flex: 1; min-width: 0; }
+.chart-box { background: #16213e; border: 1px solid #333; border-radius: 5px; padding: 12px; }
+.chart-box h2 { font-size: 13px; color: #888; margin-bottom: 8px; }
+.chart-canvas { width: 100%; height: 180px; }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <h1>MLP Neuron Viewer</h1>
+  <span>mod 43 &nbsp;|&nbsp; 512 neurons &nbsp;|&nbsp; ← →</span>
+  <div id="neuron-nav">
+    <button id="prev-btn">← Prev</button>
+    <div id="neuron-id">Neuron 0</div>
+    <button id="next-btn">Next →</button>
+  </div>
+  <button class="ctrl-btn" id="sort-btn">Sort by L2 norm</button>
+  <div class="mode-select" id="mode-select"></div>
+  <div class="mode-select">
+    <button class="basis-btn active" data-basis="residue">Residue</button>
+    <button class="basis-btn" data-basis="frequency">Frequency</button>
+  </div>
+  <span id="mode-info" style="color:#e94560"></span>
+</div>
+
+<div id="timeline"></div>
+<div id="main">
+  <div id="left">
+    <div id="heatmap-label">ReLU activation h<sub>j</sub>(a, b)</div>
+    <canvas id="heatmap-canvas" width="430" height="430"></canvas>
+    <div id="hover-info">&nbsp;</div>
+    <div id="heatmap-label2" style="color:#aaa;font-size:12px;text-align:center"></div>
+    <canvas id="heatmap-canvas2" width="430" height="430" style="cursor:crosshair;image-rendering:pixelated;border:1px solid #333"></canvas>
+    <div id="hover-info2" style="color:#aaa;font-size:12px;text-align:center;min-height:18px">&nbsp;</div>
+    <div id="kview" class="mode-select" style="align-items:center;flex-wrap:wrap;font-size:12px;color:#aaa">
+      <span>view (a,b) ↦ (k·a, k·b) mod 43: k =</span>
+      <input type="number" id="kview-input" min="1" max="42" value="1" style="width:52px;background:#0f3460;color:#e0e0e0;border:1px solid #444;border-radius:3px;font-family:inherit;font-size:12px;padding:2px 4px">
+      <span id="kview-btns" class="mode-select"></span>
+    </div>
+    <div style="color:#666;font-size:11px;max-width:430px">a frequency-k neuron becomes a frequency-1 pattern (one smooth blob / diagonal band) when viewed with its own k</div>
+  </div>
+  <div id="right">
+    <div class="chart-box">
+      <h2 id="contrib-title">Contribution to logits: hover over heatmap</h2>
+      <canvas class="chart-canvas" id="contrib-canvas" height="180"></canvas>
+    </div>
+    <div class="chart-box">
+      <h2 id="weight-title">Neuron weight per logit: W<sub>o</sub>[j, :] · W<sub>U</sub></h2>
+      <canvas class="chart-canvas" id="weight-canvas" height="180"></canvas>
+    </div>
+  </div>
+</div>
+
+<script src="timeline.js?v=5"></script>
+<script>
+const P = 43;
+let DATA = null;
+let currentMode = 'original';
+let currentBasis = 'residue'; // 'residue' or 'frequency'
+let neuronOrder = null;
+let currentIdx = 0;
+let hoverA = -1, hoverB = -1;
+let sorted = false;
+let viewK = 1;   // heatmap is drawn with (a,b) -> (viewK*a, viewK*b) mod P applied
+let hoverBasis = 'residue';   // basis of the box the mouse is over (hoverA/hoverB are indices in that basis)
+function otherBasis(b) { return b === 'frequency' ? 'residue' : 'frequency'; }
+function modInv(k) { for (let x = 1; x < P; x++) if ((k * x) % P === 1) return x; return 1; }
+// Multipliers for the current basis: display index u = dispMul*a, source index a = srcMul*u (mod P).
+// Residue basis: cell (a,b) moves to (k a, k b). Frequency basis: the DFT of the permuted grid is
+// F(k m1, k m2), so the peak at (k,k) lands on (1,1) — the display index m shows source frequency k*m.
+function dispMul(basis) { return basis === 'frequency' ? modInv(viewK) : viewK; }
+function srcMul(basis) { return basis === 'frequency' ? viewK : modInv(viewK); }
+function toDisp(x, basis) { return (dispMul(basis) * x) % P; }
+function toSrc(u, basis) { return (srcMul(basis) * u) % P; }
+function setViewK(k) {
+  k = ((Math.round(k) % P) + P) % P; if (k === 0) k = 1;
+  viewK = k;
+  document.getElementById('kview-input').value = k;
+  for (const b of document.querySelectorAll('#kview-btns button')) b.classList.toggle('active', +b.dataset.k === k);
+  draw();
+}
+
+// --- DFT utilities ---
+// Precompute twiddle factors: exp(-2πi·k·n/P)
+const twiddleRe = new Float64Array(P * P);
+const twiddleIm = new Float64Array(P * P);
+for (let k = 0; k < P; k++) {
+  for (let n = 0; n < P; n++) {
+    const angle = -2 * Math.PI * k * n / P;
+    twiddleRe[k * P + n] = Math.cos(angle);
+    twiddleIm[k * P + n] = Math.sin(angle);
+  }
+}
+
+// 1D DFT of real array x[0..P-1] → returns {re[P], im[P], mag[P]}
+function dft1d(x) {
+  const re = new Float64Array(P), im = new Float64Array(P), mag = new Float64Array(P);
+  for (let k = 0; k < P; k++) {
+    let sr = 0, si = 0;
+    for (let n = 0; n < P; n++) {
+      sr += x[n] * twiddleRe[k * P + n];
+      si += x[n] * twiddleIm[k * P + n];
+    }
+    re[k] = sr; im[k] = si;
+    mag[k] = Math.sqrt(sr * sr + si * si);
+  }
+  return { re, im, mag };
+}
+
+// 2D DFT of real array f[a*P+b] (P×P) → returns {re, im, mag}[k1*P+k2]
+function dft2d(f) {
+  const re = new Float64Array(P * P);
+  const im = new Float64Array(P * P);
+  const mag = new Float64Array(P * P);
+  for (let k1 = 0; k1 < P; k1++) {
+    for (let k2 = 0; k2 < P; k2++) {
+      let sr = 0, si = 0;
+      for (let a = 0; a < P; a++) {
+        const twR1 = twiddleRe[k1 * P + a], twI1 = twiddleIm[k1 * P + a];
+        for (let b = 0; b < P; b++) {
+          const v = f[a * P + b];
+          const twR2 = twiddleRe[k2 * P + b], twI2 = twiddleIm[k2 * P + b];
+          const reV = twR1 * twR2 - twI1 * twI2;
+          const imV = twR1 * twI2 + twI1 * twR2;
+          sr += v * reV;
+          si += v * imV;
+        }
+      }
+      const idx = k1 * P + k2;
+      re[idx] = sr; im[idx] = si;
+      mag[idx] = Math.sqrt(sr * sr + si * si);
+    }
+  }
+  return { re, im, mag };
+}
+
+// Domain coloring: hue = phase, brightness = magnitude
+// Returns [r, g, b] with 0-255
+function domainColor(re, im, maxMag) {
+  const mag = Math.sqrt(re * re + im * im);
+  const phase = Math.atan2(im, re); // -π..π
+  const hue = ((phase / (2 * Math.PI)) + 1) % 1; // 0..1
+  const lightness = maxMag > 0 ? mag / maxMag : 0; // 0..1
+  // HSL to RGB with S=1
+  return hslToRgb(hue, 1, lightness * 0.5);
+}
+
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+function hue2rgb(p, q, t) {
+  if (t < 0) t += 1;
+  if (t > 1) t -= 1;
+  if (t < 1/6) return p + (q - p) * 6 * t;
+  if (t < 1/2) return q;
+  if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+  return p;
+}
+
+// --- Data accessors ---
+function getActivations() { return DATA[currentMode].activations; }
+
+function getActivation(neuron, a, b) {
+  return getActivations()[neuron][a * P + b];
+}
+
+// Cache DFT results per neuron (cleared on mode/neuron change)
+let cachedDFT2d = null;    // {re, im, mag} for heatmap
+let cachedDFT1d = null;    // {re, im, mag} for weights
+let cachedNeuronIdx = -1;
+let cachedMode = null;
+
+function ensureDFTCache() {
+  const n = neuronIndex();
+  if (cachedNeuronIdx === n && cachedMode === currentMode) return;
+  cachedNeuronIdx = n;
+  cachedMode = currentMode;
+  cachedDFT2d = dft2d(getActivations()[n]);
+  cachedDFT1d = dft1d(DATA.weights[n].slice(0, P));
+}
+
+// --- Colormaps ---
+function seqColormap(v, vmax) {
+  if (vmax === 0) return [15, 15, 40];
+  let t = Math.max(0, Math.min(1, v / vmax));
+  let r, g, b;
+  if (t < 0.25) {
+    const s = t / 0.25;
+    r = Math.round(15 + s * 30); g = Math.round(15 + s * 20); b = Math.round(40 + s * 100);
+  } else if (t < 0.5) {
+    const s = (t - 0.25) / 0.25;
+    r = Math.round(45 - s * 15); g = Math.round(35 + s * 100); b = Math.round(140 + s * 20);
+  } else if (t < 0.75) {
+    const s = (t - 0.5) / 0.25;
+    r = Math.round(30 + s * 130); g = Math.round(135 + s * 60); b = Math.round(160 - s * 100);
+  } else {
+    const s = (t - 0.75) / 0.25;
+    r = Math.round(160 + s * 95); g = Math.round(195 + s * 55); b = Math.round(60 - s * 40);
+  }
+  return [r, g, b];
+}
+
+function neuronIndex() {
+  return neuronOrder ? neuronOrder[currentIdx] : currentIdx;
+}
+
+// --- Drawing ---
+function drawGrid(canvasId, labelId, basis) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const n = neuronIndex();
+  const isFreq = basis === 'frequency';
+  const hoverHere = hoverBasis === basis;
+
+  let vals, vmax; // vals = mag array for peak finding etc
+  let dft2dData = null; // complex data for domain coloring
+  if (isFreq) {
+    ensureDFTCache();
+    dft2dData = cachedDFT2d;
+    vals = dft2dData.mag;
+  } else {
+    vals = getActivations()[n];
+  }
+
+  vmax = 0;
+  for (let i = 0; i < vals.length; i++) {
+    if (vals[i] > vmax) vmax = vals[i];
+  }
+
+  const cellW = canvas.width / P;
+  const cellH = canvas.height / P;
+  const imgData = ctx.createImageData(canvas.width, canvas.height);
+
+  const sm = srcMul(basis);
+  for (let a = 0; a < P; a++) {          // a, b here are DISPLAY coordinates
+    for (let b = 0; b < P; b++) {
+      const idx2 = ((sm * a) % P) * P + (sm * b) % P;   // source cell shown at (a, b)
+      const [r, g, bb] = isFreq
+        ? domainColor(dft2dData.re[idx2], dft2dData.im[idx2], vmax)
+        : seqColormap(vals[idx2], vmax);
+      const x0 = Math.floor(b * cellW);
+      const y0 = Math.floor(a * cellH);
+      const x1 = Math.floor((b + 1) * cellW);
+      const y1 = Math.floor((a + 1) * cellH);
+      for (let py = y0; py < y1; py++) {
+        for (let px = x0; px < x1; px++) {
+          const idx = (py * canvas.width + px) * 4;
+          imgData.data[idx] = r; imgData.data[idx+1] = g; imgData.data[idx+2] = bb; imgData.data[idx+3] = 255;
+        }
+      }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  // Peak marker
+  let peakI = 0, peakVal = vals[0];
+  for (let i = 1; i < vals.length; i++) {
+    if (vals[i] > peakVal) { peakVal = vals[i]; peakI = i; }
+  }
+  const peakA = Math.floor(peakI / P), peakB = peakI % P;
+  {
+    const cx = Math.floor((toDisp(peakB, basis) + 0.5) * cellW);
+    const cy = Math.floor((toDisp(peakA, basis) + 0.5) * cellH);
+    const r = Math.max(3, cellW * 0.35);
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+    ctx.strokeStyle = '#ff0'; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // Hover highlight
+  if (hoverHere && hoverA >= 0 && hoverB >= 0) {
+    const dA = toDisp(hoverA, basis), dB = toDisp(hoverB, basis);
+    const x0 = Math.floor(dB * cellW);
+    const y0 = Math.floor(dA * cellH);
+    const w = Math.floor((dB + 1) * cellW) - x0;
+    const h = Math.floor((dA + 1) * cellH) - y0;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(x0, y0, w, h);
+  }
+
+  if (isFreq) {
+    document.getElementById(labelId).innerHTML =
+      `|DFT| of activation — peak at (k<sub>1</sub>=${peakA}, k<sub>2</sub>=${peakB}), mag=${peakVal.toFixed(1)}` + (viewK !== 1 ? ` · axes show k·m (view k=${viewK})` : '');
+  } else {
+    document.getElementById(labelId).innerHTML =
+      `ReLU activation h<sub>j</sub>(a, b) — peak at (${peakA}, ${peakB}), val=${peakVal.toFixed(3)}` + (viewK !== 1 ? ` · drawn at (${viewK}a, ${viewK}b)` : '');
+  }
+}
+
+function drawHeatmap() {
+  drawGrid('heatmap-canvas', 'heatmap-label', currentBasis);
+  drawGrid('heatmap-canvas2', 'heatmap-label2', otherBasis(currentBasis));
+}
+
+// Domain-colored bar chart: height = magnitude, color = phase
+function drawDomainBarChart(canvasId, reArr, imArr, N, fixedMax) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * devicePixelRatio; canvas.height = H * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.clearRect(0, 0, W, H);
+
+  const margin = { top: 20, bottom: 25, left: 45, right: 10 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+
+  let vmax = 0;
+  for (let i = 0; i < N; i++) {
+    const m = Math.sqrt(reArr[i] * reArr[i] + imArr[i] * imArr[i]);
+    if (m > vmax) vmax = m;
+  }
+  if (fixedMax > 0) vmax = fixedMax;
+  if (vmax === 0) vmax = 0.001;
+  const barW = plotW / N;
+
+  const clockR = Math.min(barW * 0.4, 6); // clock radius
+
+  for (let i = 0; i < N; i++) {
+    const m = Math.sqrt(reArr[i] * reArr[i] + imArr[i] * imArr[i]);
+    const phase = Math.atan2(imArr[i], reArr[i]);
+    const hue = ((phase / (2 * Math.PI)) + 1) % 1;
+    const [cr, cg, cb] = hslToRgb(hue, 0.85, 0.5);
+    const x = margin.left + i * barW;
+    const barH = (m / vmax) * plotH;
+    const barTop = margin.top + plotH - barH;
+    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+    ctx.fillRect(x + 1, barTop, barW - 2, barH);
+
+    // Phase clock on top of bar
+    if (m > vmax * 0.03) { // skip tiny bars
+      const cx = x + barW / 2;
+      const cy = barTop - clockR - 2;
+      // Circle
+      ctx.beginPath();
+      ctx.arc(cx, cy, clockR, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#666';
+      ctx.lineWidth = 0.7;
+      ctx.stroke();
+      // Hand: phase=0 points right (3 o'clock), increasing ccw
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + clockR * Math.cos(phase), cy - clockR * Math.sin(phase));
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
+  }
+
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < N; i += 5) ctx.fillText(i, margin.left + (i + 0.5) * barW, H - 5);
+  ctx.textAlign = 'right';
+  ctx.fillText(vmax.toFixed(1), margin.left - 4, margin.top + 10);
+  ctx.fillText('0', margin.left - 4, margin.top + plotH + 4);
+}
+
+function drawBarChart(canvasId, values, N, highlight, fixedMax) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * devicePixelRatio; canvas.height = H * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.clearRect(0, 0, W, H);
+
+  const margin = { top: 5, bottom: 25, left: 45, right: 10 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+  const vals = values.slice(0, N);
+
+  let vmin = 0, vmax = 0;
+  for (let i = 0; i < N; i++) { if (vals[i] < vmin) vmin = vals[i]; if (vals[i] > vmax) vmax = vals[i]; }
+  const absMax = fixedMax > 0 ? fixedMax : Math.max(Math.abs(vmin), Math.abs(vmax), 0.001);
+  vmin = -absMax; vmax = absMax;
+  const barW = plotW / N;
+  const zeroY = margin.top + plotH * (vmax / (vmax - vmin));
+
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(margin.left, zeroY); ctx.lineTo(W - margin.right, zeroY); ctx.stroke();
+
+  for (let i = 0; i < N; i++) {
+    const x = margin.left + i * barW;
+    const barH = (vals[i] / (vmax - vmin)) * plotH;
+    const y = zeroY - barH;
+    if (vals[i] >= 0) ctx.fillStyle = highlight === i ? '#ff6b6b' : '#e94560';
+    else ctx.fillStyle = highlight === i ? '#6ba3ff' : '#3b82f6';
+    ctx.fillRect(x + 1, Math.min(y, zeroY), barW - 2, Math.abs(barH));
+  }
+
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < N; i += 5) ctx.fillText(i, margin.left + (i + 0.5) * barW, H - 5);
+  ctx.textAlign = 'right';
+  ctx.fillText(vmax.toFixed(1), margin.left - 4, margin.top + 10);
+  ctx.fillText(vmin.toFixed(1), margin.left - 4, H - margin.bottom);
+  ctx.fillText('0', margin.left - 4, zeroY + 4);
+}
+
+function drawContrib() {
+  const n = neuronIndex();
+  const titleEl = document.getElementById('contrib-title');
+  const isFreq = hoverBasis === 'frequency';
+
+  if (hoverA < 0 || hoverB < 0) {
+    titleEl.textContent = isFreq
+      ? 'Contribution to output frequencies: hover over heatmap'
+      : 'Contribution to logits: hover over heatmap';
+    const canvas = document.getElementById('contrib-canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.clientWidth * devicePixelRatio; canvas.height = canvas.clientHeight * devicePixelRatio;
+    ctx.scale(devicePixelRatio, devicePixelRatio); ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    ctx.fillStyle = '#555'; ctx.font = '14px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('Hover over a cell in the heatmap', canvas.clientWidth / 2, canvas.clientHeight / 2);
+    return;
+  }
+
+  if (isFreq) {
+    ensureDFTCache();
+    const idx2 = hoverA * P + hoverB;
+    const actRe = cachedDFT2d.re[idx2], actIm = cachedDFT2d.im[idx2];
+    const actMag = cachedDFT2d.mag[idx2];
+    // Contribution = ĥ(k1,k2) · ŵ(k) (complex product)
+    const cRe = new Float64Array(P), cIm = new Float64Array(P);
+    for (let k = 0; k < P; k++) {
+      cRe[k] = actRe * cachedDFT1d.re[k] - actIm * cachedDFT1d.im[k];
+      cIm[k] = actRe * cachedDFT1d.im[k] + actIm * cachedDFT1d.re[k];
+    }
+    let hMax = 0, wMax = 0;
+    for (let i = 0; i < cachedDFT2d.mag.length; i++) if (cachedDFT2d.mag[i] > hMax) hMax = cachedDFT2d.mag[i];
+    for (let k = 0; k < P; k++) if (cachedDFT1d.mag[k] > wMax) wMax = cachedDFT1d.mag[k];
+    titleEl.textContent = `(k₁=${hoverA}, k₂=${hoverB}), |ĥ|=${actMag.toFixed(1)} — ĥ·ŵ(k) per output freq (scale fixed: max|ĥ|·max|ŵ|)`;
+    drawDomainBarChart('contrib-canvas', cRe, cIm, P, hMax * wMax);
+  } else {
+    const act = getActivation(n, hoverA, hoverB);
+    const weights = DATA.weights[n];
+    const contrib = weights.map(w => w * act);
+    const target = (hoverA + hoverB) % P;
+    const acts = getActivations()[n];
+    let aMax = 0, wMax = 0;
+    for (let i = 0; i < acts.length; i++) if (acts[i] > aMax) aMax = acts[i];
+    for (let k = 0; k < P; k++) if (Math.abs(weights[k]) > wMax) wMax = Math.abs(weights[k]);
+    titleEl.textContent = `Contribution at (${hoverA}, ${hoverB}), activation = ${act.toFixed(3)}, target = ${target} (light bar; scale fixed: max act · max|w|)`;
+    drawBarChart('contrib-canvas', contrib.slice(0, P), P, target, aMax * wMax);
+  }
+}
+
+function drawWeights() {
+  const n = neuronIndex();
+  const isFreq = currentBasis === 'frequency';
+
+  if (isFreq) {
+    ensureDFTCache();
+    drawDomainBarChart('weight-canvas', cachedDFT1d.re, cachedDFT1d.im, P);
+    document.getElementById('weight-title').innerHTML =
+      'DFT of weight vector ŵ<sub>j</sub>(k) — rainbow = phase, height = magnitude';
+  } else {
+    drawBarChart('weight-canvas', DATA.weights[n].slice(0, P), P, -1);
+    document.getElementById('weight-title').innerHTML =
+      'Neuron weight per logit: W<sub>o</sub>[j, :] · W<sub>U</sub>';
+  }
+}
+
+function draw() {
+  if (!DATA || !DATA[currentMode] || !DATA[currentMode].activations) return;   // snapshot still computing
+  drawHeatmap(); drawContrib(); drawWeights();
+  document.getElementById('neuron-id').textContent = `Neuron ${neuronIndex()}` + (sorted ? ` (rank ${currentIdx})` : '');
+  const info = DATA[currentMode];
+  document.getElementById('mode-info').textContent =
+    currentMode === 'original' ? `accuracy ${info.accuracy}%` : `${info.label} — accuracy ${info.accuracy}%`;
+}
+
+function updateHover(e) {
+  const canvas = e.currentTarget;
+  const basis = canvas.id === 'heatmap-canvas2' ? otherBasis(currentBasis) : currentBasis;
+  const infoEl = document.getElementById(canvas.id === 'heatmap-canvas2' ? 'hover-info2' : 'hover-info');
+  const rect = canvas.getBoundingClientRect();
+  const cellW = rect.width / P, cellH = rect.height / P;     // rendered size, not the bitmap size
+  const dispB = Math.floor((e.clientX - rect.left) / cellW);
+  const dispA = Math.floor((e.clientY - rect.top) / cellH);
+  if (dispA < 0 || dispA >= P || dispB < 0 || dispB >= P) return;
+  const newA = toSrc(dispA, basis), newB = toSrc(dispB, basis);
+  if (newA !== hoverA || newB !== hoverB || basis !== hoverBasis) {
+    hoverA = newA; hoverB = newB; hoverBasis = basis;
+    const shown = viewK !== 1 ? `  [shown at (${dispA}, ${dispB})]` : '';
+    const isFreq = basis === 'frequency';
+    if (isFreq) {
+      ensureDFTCache();
+      const idx = hoverA * P + hoverB;
+      const mag = cachedDFT2d.mag[idx];
+      const phase = Math.atan2(cachedDFT2d.im[idx], cachedDFT2d.re[idx]) * 180 / Math.PI;
+      infoEl.textContent =
+        `(k₁=${hoverA}, k₂=${hoverB})  |ĥ|=${mag.toFixed(2)}  phase=${phase.toFixed(0)}°` + shown;
+    } else {
+      const act = getActivation(neuronIndex(), hoverA, hoverB);
+      infoEl.textContent =
+        `(a=${hoverA}, b=${hoverB})  activation=${act.toFixed(4)}  target=${(hoverA+hoverB)%P}` + shown;
+    }
+    draw();
+  }
+}
+
+function onLeave() { hoverA = -1; hoverB = -1; for (const id of ['hover-info', 'hover-info2']) document.getElementById(id).innerHTML = '&nbsp;'; draw(); }
+
+function navigate(delta) {
+  currentIdx = ((currentIdx + delta) % DATA.d_mlp + DATA.d_mlp) % DATA.d_mlp;
+  cachedNeuronIdx = -1; // invalidate DFT cache
+  draw();
+}
+
+function computeNorms() {
+  const acts = getActivations();
+  const norms = [];
+  for (let j = 0; j < DATA.d_mlp; j++) {
+    let sum = 0;
+    for (let i = 0; i < acts[j].length; i++) sum += acts[j][i] * acts[j][i];
+    norms.push({ idx: j, norm: Math.sqrt(sum) });
+  }
+  return norms;
+}
+
+function toggleSort() {
+  sorted = !sorted;
+  if (sorted) {
+    const norms = computeNorms();
+    norms.sort((a, b) => b.norm - a.norm);
+    neuronOrder = norms.map(n => n.idx);
+    document.getElementById('sort-btn').textContent = 'Original order';
+  } else {
+    neuronOrder = null;
+    document.getElementById('sort-btn').textContent = 'Sort by L2 norm';
+  }
+  currentIdx = 0; cachedNeuronIdx = -1; draw();
+}
+
+function setMode(mode) {
+  currentMode = mode;
+  cachedNeuronIdx = -1; // invalidate DFT cache
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+  if (!DATA[mode].activations) return;   // arrives from the worker shortly; onData will draw
+  if (sorted) {
+    const norms = computeNorms();
+    norms.sort((a, b) => b.norm - a.norm);
+    neuronOrder = norms.map(n => n.idx);
+  }
+  draw();
+}
+
+function setBasis(basis) {
+  currentBasis = basis;
+  cachedNeuronIdx = -1;
+  document.querySelectorAll('.basis-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.basis === basis);
+  });
+  draw();
+}
+
+// Modes (W_E frequency ablations) depend on the run's dominant frequencies K, read from its index.json.
+let MODES = ['original'];
+DATA = { modulus: P, d_mlp: 512, d_model: 128, weights: null, weights_pre: null, original: { activations: null, accuracy: 0, label: 'original' } };
+function setupModes(index) {
+  const K = index.K;
+  MODES = ['original', ...K.map(k => `freq${k}`), 'freqall'];
+  const labels = { original: 'original', freqall: `freqs ${K.join(',')} (k=${K.flatMap(k => [k, P - k]).join(',')})` };
+  for (const k of K) labels[`freq${k}`] = `freq ${k} only (k=${k},${P - k})`;
+  for (const m of MODES) DATA[m] = { activations: null, accuracy: 0, label: labels[m] };
+  const box = document.getElementById('mode-select');
+  box.innerHTML = '';
+  for (const m of MODES) {
+    const b = document.createElement('button');
+    b.className = 'mode-btn' + (m === currentMode ? ' active' : ''); b.dataset.mode = m;
+    b.textContent = m === 'original' ? 'Original' : m === 'freqall' ? `All ${K.length}` : `Freq ${m.slice(4)}`;
+    b.addEventListener('click', () => setMode(m));
+    box.appendChild(b);
+  }
+  document.querySelector('#top-bar span').textContent = `mod 43 | 512 neurons | freqs ${K.join(', ')} | ← →`;
+  const kb = document.getElementById('kview-btns');
+  kb.innerHTML = '';
+  for (const k of [1, ...K]) {
+    const b = document.createElement('button');
+    b.className = 'mode-btn' + (k === viewK ? ' active' : ''); b.dataset.k = k;
+    b.textContent = k === 1 ? 'off (k=1)' : `k=${k}`;
+    b.addEventListener('click', () => setViewK(k));
+    kb.appendChild(b);
+  }
+}
+
+document.getElementById('heatmap-canvas').addEventListener('mousemove', updateHover);
+document.getElementById('heatmap-canvas').addEventListener('mouseleave', onLeave);
+document.getElementById('heatmap-canvas2').addEventListener('mousemove', updateHover);
+document.getElementById('heatmap-canvas2').addEventListener('mouseleave', onLeave);
+document.getElementById('kview-input').addEventListener('change', e => setViewK(+e.target.value));
+document.getElementById('prev-btn').addEventListener('click', () => navigate(-1));
+document.getElementById('next-btn').addEventListener('click', () => navigate(1));
+document.getElementById('sort-btn').addEventListener('click', toggleSort);
+document.querySelectorAll('.basis-btn').forEach(b => {
+  b.addEventListener('click', () => setBasis(b.dataset.basis));
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') { navigate(-1); e.preventDefault(); }
+  if (e.key === 'ArrowRight') { navigate(1); e.preventDefault(); }
+});
+window.addEventListener('resize', draw);
+
+// Activations and weights are recomputed from the raw weights of the selected training
+// snapshot (model_worker.js); the current mode is computed first, the others follow.
+Timeline.init({
+  container: '#timeline', get modes() { return MODES; }, priority: () => currentMode,
+  onIndex: setupModes,
+  onStart: () => { for (const m of MODES) DATA[m].activations = null; },
+  onData: (step, mode, data) => {
+    DATA.weights = data.weights; DATA.weights_pre = data.weights_pre;
+    DATA[mode].activations = data.activations; DATA[mode].accuracy = data.accuracy;
+    if (mode === currentMode) {
+      cachedNeuronIdx = -1;
+      if (sorted) { const norms = computeNorms(); norms.sort((a, b) => b.norm - a.norm); neuronOrder = norms.map(n => n.idx); }
+      draw();
+    }
+  },
+  onError: msg => { document.getElementById('mode-info').textContent = msg; },
+});
+</script>
+</body>
+</html>

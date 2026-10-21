@@ -1,0 +1,21 @@
+[
+ {
+  "dir": "snapshots_final",
+  "name": "final grokked model",
+  "K": [
+   1,
+   9,
+   14
+  ],
+  "steps": 1
+ },
+ {
+  "dir": "snapshots",
+  "name": "training run",
+  "K": [
+   10,
+   12
+  ],
+  "steps": 663
+ }
+]

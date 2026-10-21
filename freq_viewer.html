@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Frequency Tensor Viewer — Grokked mod-43</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+#top-bar { padding: 10px 20px; background: #16213e; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+#top-bar h1 { font-size: 16px; font-weight: 600; color: #ccc; }
+#top-bar span { color: #888; }
+.nav { display: flex; align-items: center; gap: 8px; }
+.nav button { background: #0f3460; color: #e0e0e0; border: 1px solid #444; padding: 4px 12px; cursor: pointer; border-radius: 3px; font-family: inherit; }
+.nav button:hover { background: #1a5276; }
+#freq-id { font-size: 18px; font-weight: bold; color: #e94560; min-width: 100px; text-align: center; }
+.mode-select { display: flex; gap: 4px; }
+.mode-btn { background: #0f3460; color: #888; border: 1px solid #444; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 12px; }
+.mode-btn:hover { background: #1a5276; }
+.mode-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+
+#main { display: flex; padding: 15px; gap: 20px; }
+#left { display: flex; flex-direction: column; gap: 8px; }
+#heatmap-label { color: #aaa; font-size: 12px; text-align: center; max-width: 460px; }
+#heatmap-canvas { cursor: crosshair; image-rendering: pixelated; border: 1px solid #333; }
+#hover-info { color: #aaa; font-size: 12px; text-align: center; min-height: 18px; }
+#colorwheel-box { display: flex; align-items: center; gap: 12px; justify-content: center; }
+#colorwheel-box canvas { border: 1px solid #333; border-radius: 50%; }
+#colorwheel-box span { color: #666; font-size: 11px; }
+
+#right { display: flex; flex-direction: column; gap: 12px; flex: 1; min-width: 0; }
+.info-box { background: #16213e; border: 1px solid #333; border-radius: 5px; padding: 12px; }
+.info-box h2 { font-size: 13px; color: #888; margin-bottom: 8px; }
+.chart-canvas { width: 100%; }
+#top-entries { font-size: 12px; line-height: 1.6; max-height: 300px; overflow-y: auto; }
+#top-entries .bright { color: #e94560; }
+#top-entries .dim { color: #555; }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <h1>Frequency Tensor</h1>
+  <span>C(k₁, k₂, k_out) = 3D DFT of the MLP map &nbsp;|&nbsp; ← →</span>
+  <div class="nav">
+    <button id="prev-btn">← Prev</button>
+    <div id="freq-id">k_out = 1</div>
+    <button id="next-btn">Next →</button>
+  </div>
+  <div class="mode-select">
+    <button class="mode-btn active" data-mode="mag">Magnitude</button>
+    <button class="mode-btn" data-mode="domain">Domain color</button>
+    <button class="mode-btn" data-mode="logmag">Log magnitude</button>
+  </div>
+</div>
+
+<div id="main">
+  <div id="left">
+    <div id="heatmap-label">C(k₁, k₂, k_out): input freq pair (k₁, k₂) → output freq k_out</div>
+    <canvas id="heatmap-canvas" width="430" height="430"></canvas>
+    <div id="hover-info">&nbsp;</div>
+    <div id="colorwheel-box">
+      <canvas id="colorwheel" width="60" height="60"></canvas>
+      <span>phase colorwheel<br>0° = right, ccw</span>
+    </div>
+  </div>
+  <div id="right">
+    <div class="info-box">
+      <h2 id="overview-title">Magnitude per output freq (summed over k₁,k₂)</h2>
+      <canvas class="chart-canvas" id="overview-canvas" height="140"></canvas>
+    </div>
+    <div class="info-box">
+      <h2 id="row-title">Row k₁ = hover row — magnitude per k₂</h2>
+      <canvas class="chart-canvas" id="row-canvas" height="140"></canvas>
+    </div>
+    <div class="info-box">
+      <h2 id="entries-title">Top entries for this k_out</h2>
+      <div id="top-entries"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const P = 43;
+const HALF_P = Math.floor(P / 2) + 1; // 22
+let DATA = null;
+let currentKout = 1;
+let colorMode = 'mag'; // 'mag', 'domain', 'logmag'
+let hoverK1 = -1, hoverK2 = -1;
+
+// --- Color utilities ---
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+function hue2rgb(p, q, t) {
+  if (t < 0) t += 1; if (t > 1) t -= 1;
+  if (t < 1/6) return p + (q - p) * 6 * t;
+  if (t < 1/2) return q;
+  if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+  return p;
+}
+
+function domainColor(re, im, maxMag) {
+  const mag = Math.sqrt(re * re + im * im);
+  const phase = Math.atan2(im, re);
+  const hue = ((phase / (2 * Math.PI)) + 1) % 1;
+  const lightness = maxMag > 0 ? mag / maxMag : 0;
+  return hslToRgb(hue, 1, lightness * 0.5);
+}
+
+function seqColormap(v, vmax) {
+  if (vmax === 0) return [15, 15, 40];
+  let t = Math.max(0, Math.min(1, v / vmax));
+  let r, g, b;
+  if (t < 0.25) {
+    const s = t / 0.25;
+    r = Math.round(15 + s * 30); g = Math.round(15 + s * 20); b = Math.round(40 + s * 100);
+  } else if (t < 0.5) {
+    const s = (t - 0.25) / 0.25;
+    r = Math.round(45 - s * 15); g = Math.round(35 + s * 100); b = Math.round(140 + s * 20);
+  } else if (t < 0.75) {
+    const s = (t - 0.5) / 0.25;
+    r = Math.round(30 + s * 130); g = Math.round(135 + s * 60); b = Math.round(160 - s * 100);
+  } else {
+    const s = (t - 0.75) / 0.25;
+    r = Math.round(160 + s * 95); g = Math.round(195 + s * 55); b = Math.round(60 - s * 40);
+  }
+  return [r, g, b];
+}
+
+// --- Draw color wheel ---
+function drawColorWheel() {
+  const canvas = document.getElementById('colorwheel');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W / 2, cy = H / 2, R = W / 2 - 2;
+  const imgData = ctx.createImageData(W, H);
+  for (let py = 0; py < H; py++) {
+    for (let px = 0; px < W; px++) {
+      const dx = px - cx, dy = py - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist <= R) {
+        const phase = Math.atan2(-dy, dx);
+        const hue = ((phase / (2 * Math.PI)) + 1) % 1;
+        const lightness = 0.15 + 0.35 * (dist / R);
+        const [r, g, b] = hslToRgb(hue, 1, lightness);
+        const idx = (py * W + px) * 4;
+        imgData.data[idx] = r; imgData.data[idx+1] = g; imgData.data[idx+2] = b; imgData.data[idx+3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+// --- Heatmap ---
+function drawHeatmap() {
+  const canvas = document.getElementById('heatmap-canvas');
+  const ctx = canvas.getContext('2d');
+  const re = DATA.re[currentKout];
+  const im = DATA.im[currentKout];
+
+  // Compute magnitudes
+  const mag = new Float64Array(P * P);
+  let maxMag = 0;
+  for (let i = 0; i < P * P; i++) {
+    mag[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+    if (mag[i] > maxMag) maxMag = mag[i];
+  }
+  if (maxMag === 0) maxMag = 1;
+
+  // Log magnitude
+  const logMag = new Float64Array(P * P);
+  let maxLog = 0;
+  if (colorMode === 'logmag') {
+    for (let i = 0; i < P * P; i++) {
+      logMag[i] = Math.log10(mag[i] + 1);
+      if (logMag[i] > maxLog) maxLog = logMag[i];
+    }
+    if (maxLog === 0) maxLog = 1;
+  }
+
+  const cellW = canvas.width / P, cellH = canvas.height / P;
+  const imgData = ctx.createImageData(canvas.width, canvas.height);
+
+  for (let k1 = 0; k1 < P; k1++) {
+    for (let k2 = 0; k2 < P; k2++) {
+      const idx = k1 * P + k2;
+      let r, g, b;
+      if (colorMode === 'domain') {
+        [r, g, b] = domainColor(re[idx], im[idx], maxMag);
+      } else if (colorMode === 'logmag') {
+        [r, g, b] = seqColormap(logMag[idx], maxLog);
+      } else {
+        [r, g, b] = seqColormap(mag[idx], maxMag);
+      }
+      const x0 = Math.floor(k2 * cellW), y0 = Math.floor(k1 * cellH);
+      const x1 = Math.floor((k2 + 1) * cellW), y1 = Math.floor((k1 + 1) * cellH);
+      for (let py = y0; py < y1; py++) {
+        for (let px = x0; px < x1; px++) {
+          const pidx = (py * canvas.width + px) * 4;
+          imgData.data[pidx] = r; imgData.data[pidx+1] = g; imgData.data[pidx+2] = b; imgData.data[pidx+3] = 255;
+        }
+      }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  // Hover highlight
+  if (hoverK1 >= 0 && hoverK2 >= 0) {
+    const x0 = Math.floor(hoverK2 * cellW), y0 = Math.floor(hoverK1 * cellH);
+    const w = Math.floor((hoverK2 + 1) * cellW) - x0;
+    const h = Math.floor((hoverK1 + 1) * cellH) - y0;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(x0, y0, w, h);
+  }
+
+  // Peak marker
+  let peakI = 0, peakMag = mag[0];
+  for (let i = 1; i < P * P; i++) { if (mag[i] > peakMag) { peakMag = mag[i]; peakI = i; } }
+  const peakK1 = Math.floor(peakI / P), peakK2 = peakI % P;
+  {
+    const ccx = Math.floor((peakK2 + 0.5) * cellW);
+    const ccy = Math.floor((peakK1 + 0.5) * cellH);
+    const rr = Math.max(3, cellW * 0.35);
+    ctx.beginPath(); ctx.arc(ccx, ccy, rr, 0, 2 * Math.PI);
+    ctx.strokeStyle = '#ff0'; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // Update labels
+  const kConj = currentKout > 0 ? P - currentKout : 0;
+  document.getElementById('freq-id').textContent = `k_out = ${currentKout}`;
+  const conjNote = currentKout > 0 && currentKout !== kConj ? ` (conjugate: ${kConj})` : '';
+  document.getElementById('heatmap-label').innerHTML =
+    `C(k₁, k₂, ${currentKout}): which input freq pairs drive output freq ${currentKout}${conjNote}<br>` +
+    `rows = k₁, cols = k₂ &nbsp;|&nbsp; peak at (${peakK1}, ${peakK2}), |C|=${peakMag.toFixed(0)}`;
+}
+
+// --- Overview bar chart: energy per output freq ---
+function drawOverview() {
+  const canvas = document.getElementById('overview-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * devicePixelRatio; canvas.height = H * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.clearRect(0, 0, W, H);
+
+  const margin = { top: 5, bottom: 22, left: 50, right: 10 };
+  const plotW = W - margin.left - margin.right, plotH = H - margin.top - margin.bottom;
+
+  // Sum of magnitudes per k_out
+  const vals = [];
+  for (let k = 0; k < P; k++) {
+    let sum = 0;
+    const re = DATA.re[k], im = DATA.im[k];
+    for (let i = 0; i < P * P; i++) {
+      sum += Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+    }
+    vals.push(sum);
+  }
+
+  let vmax = 0;
+  for (let i = 0; i < P; i++) if (vals[i] > vmax) vmax = vals[i];
+  if (vmax === 0) vmax = 1;
+  const barW = plotW / P;
+
+  for (let i = 0; i < P; i++) {
+    const x = margin.left + i * barW;
+    const barH = (vals[i] / vmax) * plotH;
+    ctx.fillStyle = i === currentKout ? '#e94560' : '#555';
+    ctx.fillRect(x + 1, margin.top + plotH - barH, barW - 2, barH);
+  }
+
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < P; i += 5) ctx.fillText(i, margin.left + (i + 0.5) * barW, H - 4);
+  ctx.textAlign = 'right';
+  ctx.fillText(vmax.toFixed(0), margin.left - 4, margin.top + 10);
+}
+
+// --- Row chart: for hovered k1, show magnitude per k2 ---
+function drawRowChart() {
+  const canvas = document.getElementById('row-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * devicePixelRatio; canvas.height = H * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.clearRect(0, 0, W, H);
+
+  const margin = { top: 20, bottom: 22, left: 50, right: 10 };
+  const plotW = W - margin.left - margin.right, plotH = H - margin.top - margin.bottom;
+
+  if (hoverK1 < 0) {
+    ctx.fillStyle = '#555'; ctx.font = '13px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('Hover a row in the heatmap', W / 2, H / 2);
+    document.getElementById('row-title').textContent = 'Hover a row to see k₂ profile';
+    return;
+  }
+
+  document.getElementById('row-title').textContent = `Row k₁=${hoverK1}: magnitude and phase per k₂`;
+
+  const re = DATA.re[currentKout], im = DATA.im[currentKout];
+  const barW = plotW / P;
+
+  // Find max in this row for scaling
+  let vmax = 0;
+  for (let k2 = 0; k2 < P; k2++) {
+    const idx = hoverK1 * P + k2;
+    const m = Math.sqrt(re[idx] * re[idx] + im[idx] * im[idx]);
+    if (m > vmax) vmax = m;
+  }
+  if (vmax === 0) vmax = 1;
+
+  const clockR = Math.min(barW * 0.4, 6);
+
+  for (let k2 = 0; k2 < P; k2++) {
+    const idx = hoverK1 * P + k2;
+    const rr = re[idx], ii = im[idx];
+    const m = Math.sqrt(rr * rr + ii * ii);
+    const phase = Math.atan2(ii, rr);
+    const hue = ((phase / (2 * Math.PI)) + 1) % 1;
+    const [cr, cg, cb] = hslToRgb(hue, 0.85, 0.5);
+
+    const x = margin.left + k2 * barW;
+    const barH = (m / vmax) * plotH;
+    const barTop = margin.top + plotH - barH;
+
+    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+    ctx.fillRect(x + 1, barTop, barW - 2, barH);
+
+    // Phase clock
+    if (m > vmax * 0.03) {
+      const cx = x + barW / 2, cy = barTop - clockR - 2;
+      ctx.beginPath(); ctx.arc(cx, cy, clockR, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#666'; ctx.lineWidth = 0.7; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + clockR * Math.cos(phase), cy - clockR * Math.sin(phase));
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+    }
+
+    // Highlight hovered k2
+    if (k2 === hoverK2) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(x + 1, barTop, barW - 2, barH);
+    }
+  }
+
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i < P; i += 5) ctx.fillText(i, margin.left + (i + 0.5) * barW, H - 4);
+  ctx.textAlign = 'right';
+  ctx.fillText(vmax.toFixed(0), margin.left - 4, margin.top + 10);
+}
+
+// --- Top entries list ---
+function drawTopEntries() {
+  const re = DATA.re[currentKout], im = DATA.im[currentKout];
+  const entries = [];
+  for (let i = 0; i < P * P; i++) {
+    const m = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+    if (m > 0.1) {
+      const k1 = Math.floor(i / P), k2 = i % P;
+      const phase = Math.atan2(im[i], re[i]) * 180 / Math.PI;
+      entries.push({ k1, k2, mag: m, phase, re: re[i], im: im[i] });
+    }
+  }
+  entries.sort((a, b) => b.mag - a.mag);
+
+  const top = entries.slice(0, 30);
+  const maxMag = top.length > 0 ? top[0].mag : 1;
+
+  const el = document.getElementById('top-entries');
+  el.innerHTML = top.map(e => {
+    const cls = e.mag > maxMag * 0.1 ? 'bright' : 'dim';
+    const highlight = (e.k1 === hoverK1 && e.k2 === hoverK2) ? ' style="background:#333"' : '';
+    return `<div class="${cls}"${highlight}>` +
+      `(${e.k1}, ${e.k2}) → ${currentKout}: ` +
+      `|${e.mag.toFixed(0)}| ∠${e.phase.toFixed(0)}° ` +
+      `= ${e.re.toFixed(0)} + ${e.im.toFixed(0)}i</div>`;
+  }).join('');
+}
+
+// --- Interaction ---
+function updateHover(e) {
+  const canvas = document.getElementById('heatmap-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const cellW = canvas.width / P, cellH = canvas.height / P;
+  const mx = (e.clientX - rect.left) * canvas.width / rect.width;
+  const my = (e.clientY - rect.top) * canvas.height / rect.height;
+  const newK2 = Math.floor(mx / cellW);
+  const newK1 = Math.floor(my / cellH);
+  if (newK1 >= 0 && newK1 < P && newK2 >= 0 && newK2 < P && (newK1 !== hoverK1 || newK2 !== hoverK2)) {
+    hoverK1 = newK1; hoverK2 = newK2;
+    const idx = hoverK1 * P + hoverK2;
+    const r = DATA.re[currentKout][idx], i = DATA.im[currentKout][idx];
+    const m = Math.sqrt(r * r + i * i);
+    const phase = Math.atan2(i, r) * 180 / Math.PI;
+    document.getElementById('hover-info').textContent =
+      `C(${hoverK1}, ${hoverK2}, ${currentKout}) = ${r.toFixed(1)} + ${i.toFixed(1)}i  |${m.toFixed(1)}| ∠${phase.toFixed(0)}°`;
+    draw();
+  }
+}
+
+function onLeave() {
+  hoverK1 = -1; hoverK2 = -1;
+  document.getElementById('hover-info').innerHTML = '&nbsp;';
+  draw();
+}
+
+function navigate(delta) {
+  currentKout = ((currentKout + delta) % P + P) % P;
+  draw();
+}
+
+function draw() {
+  drawHeatmap();
+  drawOverview();
+  drawRowChart();
+  drawTopEntries();
+}
+
+// --- Init ---
+fetch('freq_tensor.json')
+  .then(r => r.json())
+  .then(data => {
+    DATA = data;
+    drawColorWheel();
+    document.getElementById('heatmap-canvas').addEventListener('mousemove', updateHover);
+    document.getElementById('heatmap-canvas').addEventListener('mouseleave', onLeave);
+    document.getElementById('prev-btn').addEventListener('click', () => navigate(-1));
+    document.getElementById('next-btn').addEventListener('click', () => navigate(1));
+    document.querySelectorAll('.mode-btn').forEach(b => b.addEventListener('click', () => {
+      colorMode = b.dataset.mode;
+      document.querySelectorAll('.mode-btn').forEach(x => x.classList.toggle('active', x.dataset.mode === colorMode));
+      draw();
+    }));
+    document.addEventListener('keydown', e => {
+      if (e.key === 'ArrowLeft') { navigate(-1); e.preventDefault(); }
+      if (e.key === 'ArrowRight') { navigate(1); e.preventDefault(); }
+    });
+    window.addEventListener('resize', draw);
+    draw();
+  });
+</script>
+</body>
+</html>

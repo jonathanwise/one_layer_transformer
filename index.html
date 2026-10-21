@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Grokked mod-43 model — viewers</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+#tabs { display: flex; align-items: center; gap: 4px; padding: 6px 12px; background: #0f0f22; border-bottom: 1px solid #333; height: 40px; }
+#tabs .tab { background: #0f3460; color: #999; border: 1px solid #444; padding: 4px 12px; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 12px; }
+#tabs .tab:hover { background: #1a5276; color: #ddd; }
+#tabs .tab.active { background: #e94560; color: #fff; border-color: #e94560; }
+#tabs .hint { color: #666; font-size: 11px; margin-left: auto; }
+#frames { position: relative; height: calc(100% - 40px); }
+#frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #1a1a2e; }
+#frames iframe[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="tabs"></div>
+<div id="frames"></div>
+<script>
+// Each tab is one of the standalone viewer pages in an iframe, created on first use and kept alive
+// afterwards so its state (neuron, step, mode) survives switching tabs. The ?run= parameter is
+// passed through to every viewer; the model switcher inside a viewer reloads this page (target=_top).
+const TABS = [
+  { id: 'neurons',    label: 'Neurons',        src: 'neuron_viewer.html' },
+  { id: 'logits',     label: 'Logits',         src: 'logit_viewer.html' },
+  { id: 'c3',         label: 'Cⁿ projection',  src: 'c3_viewer.html' },
+  { id: 'embedding',  label: 'Embedding',      src: 'embed_viewer.html' },
+  { id: 'attention',  label: 'Attention',      src: 'attention_viewer.html' },
+  { id: 'mlp',        label: 'MLP',            src: 'mlp_viewer.html' },
+  { id: 'activation', label: 'Activations in DFT space', src: 'activation_dft_viewer.html', norun: true },
+];
+const params = new URLSearchParams(location.search);
+const run = params.get('run');
+const tabsEl = document.getElementById('tabs'), framesEl = document.getElementById('frames');
+let active = null;
+function show(id) {
+  const t = TABS.find(x => x.id === id) || TABS[0];
+  active = t.id;
+  for (const x of TABS) {
+    const b = document.getElementById('tab-' + x.id); b.classList.toggle('active', x.id === active);
+    let f = document.getElementById('frame-' + x.id);
+    if (x.id === active && !f) {
+      f = document.createElement('iframe'); f.id = 'frame-' + x.id;
+      f.src = x.src + (run && !x.norun ? '?run=' + encodeURIComponent(run) : '');
+      framesEl.appendChild(f);
+    }
+    if (f) f.hidden = x.id !== active;
+  }
+  const f = document.getElementById('frame-' + active); if (f) f.focus();
+  history.replaceState(null, '', location.pathname + location.search + '#' + active);
+}
+for (const t of TABS) {
+  const b = document.createElement('button'); b.className = 'tab'; b.id = 'tab-' + t.id; b.textContent = t.label;
+  b.addEventListener('click', () => show(t.id)); tabsEl.appendChild(b);
+}
+const hint = document.createElement('span'); hint.className = 'hint'; hint.textContent = 'each tab keeps its state · model/run is chosen inside a tab and applies to all'; tabsEl.appendChild(hint);
+show(location.hash.replace('#', '') || TABS[0].id);
+window.addEventListener('hashchange', () => { const id = location.hash.replace('#', ''); if (id && id !== active) show(id); });
+</script>
+</body>
+</html>

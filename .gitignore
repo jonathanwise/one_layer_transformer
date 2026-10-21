@@ -220,3 +220,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# exported training snapshots for the viewers (regenerate with export_snapshots.py)
+snapshots/
+snapshots_final/
+weights/
+weights.zip
+site/

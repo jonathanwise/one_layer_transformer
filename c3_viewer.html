@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cⁿ Viewer — mod-43 grokking</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+#top-bar { padding: 10px 20px; background: #16213e; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+#top-bar h1 { font-size: 16px; font-weight: 600; color: #ccc; }
+#top-bar span.hint { color: #888; }
+.btn-group { display: flex; gap: 4px; align-items: center; }
+.btn-group .lbl { color: #777; font-size: 11px; margin-right: 4px; }
+.tbtn { background: #0f3460; color: #888; border: 1px solid #444; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 12px; }
+.tbtn:hover { background: #1a5276; }
+.tbtn.active { background: #e94560; color: #fff; border-color: #e94560; }
+#main { display: flex; padding: 15px; gap: 15px; align-items: flex-start; }
+#left { display: flex; flex-direction: column; gap: 10px; }
+#panels { display: flex; gap: 10px; }
+.panel { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+.panel canvas { border: 1px solid #333; cursor: crosshair; background: #12122a; }
+.panel .ptitle { color: #aaa; font-size: 12px; }
+.panel .psum { color: #ccc; font-size: 11px; min-height: 16px; }
+#legend { color: #888; font-size: 11px; display: flex; gap: 14px; padding-left: 4px; }
+#legend i { display: inline-block; width: 10px; height: 10px; border-radius: 5px; margin-right: 4px; vertical-align: middle; }
+#right { display: flex; flex-direction: column; gap: 12px; flex: 1; min-width: 360px; }
+.info-box { background: #16213e; border: 1px solid #333; border-radius: 5px; padding: 12px; }
+.info-box h2 { font-size: 13px; color: #888; margin-bottom: 8px; }
+.info-box p { color: #aaa; font-size: 12px; line-height: 1.5; }
+#detail-head { color: #e94560; font-size: 14px; font-weight: bold; margin-bottom: 6px; }
+#detail-meta { color: #aaa; font-size: 12px; line-height: 1.6; margin-bottom: 8px; }
+#detail-row { display: flex; gap: 12px; align-items: flex-start; }
+#heat-canvas { border: 1px solid #333; image-rendering: pixelated; }
+#clock-table { border-collapse: collapse; }
+#clock-table th { color: #777; font-weight: normal; font-size: 11px; padding: 2px 6px; text-align: center; }
+#clock-table td { padding: 2px 6px; text-align: center; vertical-align: top; }
+#clock-table td.k { color: #ccc; font-weight: bold; }
+#clock-table .val { font-size: 10px; color: #999; white-space: nowrap; }
+#input-row { display: flex; gap: 10px; align-items: flex-start; }
+#grid-canvas { border: 1px solid #333; image-rendering: pixelated; cursor: crosshair; }
+#ab-controls { color: #aaa; font-size: 12px; line-height: 1.8; }
+#ab-controls input { width: 48px; background: #0f3460; color: #eee; border: 1px solid #444; font-family: inherit; padding: 2px 4px; }
+#in-clocks { display: flex; gap: 8px; }
+.inclock { text-align: center; color: #888; font-size: 10px; }
+#logits-canvas { width: 100%; height: 170px; }
+table.stats { border-collapse: collapse; width: 100%; }
+table.stats td { padding: 3px 6px; border-bottom: 1px solid #222; font-size: 12px; color: #bbb; }
+table.stats td:last-child { text-align: right; color: #eee; }
+table.stats tr.sec td { color: #e94560; padding-top: 10px; border-bottom: 1px solid #444; }
+#sv-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.svbox { background: #16213e; border: 1px solid #333; border-radius: 5px; padding: 8px; }
+.svbox h3 { font-size: 12px; color: #888; margin-bottom: 4px; }
+code { color: #f0c674; }
+#guide { margin: 10px 15px 30px; padding: 16px 18px; background: #12122a; border: 1px solid #333; border-radius: 5px; max-width: 1100px; }
+#guide h2 { font-size: 13px; color: #e94560; margin: 14px 0 8px; }
+#guide h2:first-child { margin-top: 0; }
+#guide p.intro { color: #aaa; font-size: 12px; line-height: 1.55; margin-bottom: 8px; }
+#guide svg { width: 100%; max-width: 1000px; display: block; margin: 4px 0 8px; }
+#guide table.glossary { border-collapse: collapse; width: 100%; }
+#guide table.glossary th { text-align: left; color: #888; font-weight: normal; font-size: 11px; padding: 4px 8px; border-bottom: 1px solid #444; }
+#guide table.glossary td { vertical-align: top; padding: 6px 8px; border-bottom: 1px solid #222; color: #bbb; font-size: 12px; line-height: 1.5; }
+#guide table.glossary td:first-child { white-space: nowrap; color: #eee; }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <h1 id="title-h1">Cⁿ Viewer</h1>
+  <span class="hint" id="hint">mod 43 · x<sub>k</sub>(a) = e<sup>−2πi k a/43</sup> · ← → step neurons / move b</span>
+  <div class="btn-group">
+    <button class="tbtn mode-btn active" data-mode="neurons">Neurons</button>
+    <button class="tbtn mode-btn" data-mode="input">Input (a, b)</button>
+    <button class="tbtn mode-btn" data-mode="stream">Stream check</button>
+  </div>
+  <div class="btn-group" id="qty-group">
+    <span class="lbl">quantity</span>
+    <button class="tbtn qty-btn active" data-q="kappa" title="h·w/2 : coefficient of x_k(a+b) that neuron sends to output k">κ = h·w/2</button>
+    <button class="tbtn qty-btn" data-q="h" title="(k,k) coefficient of the ReLU output: h_j ⊃ Re(h x_k(a+b))">h</button>
+    <button class="tbtn qty-btn" data-q="ab" title="product of the two read coefficients: predicts the phase of h">a·b</button>
+    <button class="tbtn qty-btn" data-q="a" title="read coefficient on x_k(a)">a</button>
+    <button class="tbtn qty-btn" data-q="b" title="read coefficient on x_k(b)">b</button>
+    <button class="tbtn qty-btn" data-q="w" title="write coefficient at output frequency k">w</button>
+    <button class="tbtn qty-btn" data-q="gamma" title="h·conj(w)/2 : junk coefficient of x_k(a+b+c)">γ = h·w̄/2</button>
+    <button class="tbtn qty-btn" data-q="d" title="(k,−k) coefficient of the ReLU output: a−b term">d</button>
+    <button class="tbtn qty-btn" data-q="dw" title="d·w/2 : junk coefficient of x_k(a−b−c)">d·w/2</button>
+  </div>
+  <div class="btn-group" id="layout-group">
+    <span class="lbl">layout</span>
+    <button class="tbtn layout-btn active" data-l="plane">Plane</button>
+    <button class="tbtn layout-btn" data-l="rings">Rings</button>
+    <button class="tbtn layout-btn" data-l="phase" title="x = arg(a·b) = arg a + arg b, y = arg w. Multiplication + a phase-cancelling write puts every neuron on the anti-diagonal y = −x">Phase map</button>
+  </div>
+  <div class="btn-group" id="alive-group">
+    <button class="tbtn" id="alive-btn">alive only</button>
+  </div>
+</div>
+
+<div id="timeline"></div>
+<div id="main">
+  <div id="left">
+    <div id="input-row" style="display:none">
+      <canvas id="grid-canvas" width="258" height="258"></canvas>
+      <div>
+        <div id="ab-controls">
+          a = <input id="in-a" type="number" min="0" max="42" value="20"> &nbsp;
+          b = <input id="in-b" type="number" min="0" max="42" value="30"><br>
+          <span id="ab-info"></span><br>
+          <span style="color:#666">click grid · arrow keys move a (↑↓) and b (←→)</span><br>
+          <span style="color:#666">grid colour = logit margin (correct − runner-up)</span>
+        </div>
+        <div style="color:#888;font-size:11px;margin-top:8px" id="in-clocks-title">input (unit circle):</div>
+        <div id="in-clocks"></div>
+      </div>
+    </div>
+    <div id="panels"></div>
+    <div id="legend"><span id="legend-k"></span><span id="legend-extra"></span></div>
+    <div id="stream-view" style="display:none">
+      <div id="sv-row"></div>
+    </div>
+  </div>
+  <div id="right">
+    <div class="info-box" id="explain-box"><p id="explain"></p></div>
+    <div class="info-box" id="logits-box" style="display:none">
+      <h2 id="logits-title">Logits</h2>
+      <canvas id="logits-canvas" height="170"></canvas>
+    </div>
+    <div class="info-box" id="detail-box">
+      <div id="detail-head">Hover a dot</div>
+      <div id="detail-meta"></div>
+      <div id="detail-row">
+        <canvas id="heat-canvas" width="129" height="129"></canvas>
+        <table id="clock-table"></table>
+      </div>
+    </div>
+    <div class="info-box" id="stream-box" style="display:none"></div>
+  </div>
+</div>
+
+<div id="guide">
+  <h2>What the dots are: one neuron's path through the model, at one frequency k</h2>
+  <p class="intro">Everything in this viewer is drawn for one frequency k at a time (one panel per frequency the model uses). At frequency k, a residue n is represented by a point on the unit circle,
+    <code>x<sub>k</sub>(n) = e<sup>−2πikn/43</sup></code>, a "clock hand" at angle −2πkn/43. Adding residues multiplies clock hands: <code>x<sub>k</sub>(a)·x<sub>k</sub>(b) = x<sub>k</sub>(a+b)</code>.
+    That is the whole trick the network has learned, and the quantities below say how each neuron takes part in it.</p>
+  <svg viewBox="0 0 980 330" xmlns="http://www.w3.org/2000/svg" font-family="Menlo, Consolas, monospace" font-size="12">
+    <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#888"/></marker></defs>
+    <!-- inputs -->
+    <g>
+      <circle cx="70" cy="90" r="34" fill="none" stroke="#555"/><line x1="70" y1="90" x2="98" y2="70" stroke="#e94560" stroke-width="2"/>
+      <text x="70" y="140" fill="#ccc" text-anchor="middle">x<tspan baseline-shift="sub" font-size="9">k</tspan>(a)</text>
+      <text x="70" y="40" fill="#888" text-anchor="middle">token a</text>
+      <circle cx="70" cy="240" r="34" fill="none" stroke="#555"/><line x1="70" y1="240" x2="52" y2="210" stroke="#3b82f6" stroke-width="2"/>
+      <text x="70" y="290" fill="#ccc" text-anchor="middle">x<tspan baseline-shift="sub" font-size="9">k</tspan>(b)</text>
+      <text x="70" y="190" fill="#888" text-anchor="middle">token b</text>
+    </g>
+    <text x="150" y="168" fill="#666" text-anchor="middle" font-size="10">attention copies</text>
+    <text x="150" y="180" fill="#666" text-anchor="middle" font-size="10">both into the stream</text>
+    <!-- read -->
+    <line x1="104" y1="90" x2="215" y2="140" stroke="#888" marker-end="url(#ah)"/>
+    <line x1="104" y1="240" x2="215" y2="190" stroke="#888" marker-end="url(#ah)"/>
+    <rect x="220" y="110" width="180" height="110" rx="6" fill="#16213e" stroke="#444"/>
+    <text x="310" y="132" fill="#e94560" text-anchor="middle" font-weight="bold">read (a<tspan baseline-shift="sub" font-size="9">k</tspan>, b<tspan baseline-shift="sub" font-size="9">k</tspan>)</text>
+    <text x="310" y="154" fill="#ccc" text-anchor="middle">pre = bias</text>
+    <text x="310" y="170" fill="#ccc" text-anchor="middle">+ Re(a<tspan baseline-shift="sub" font-size="9">k</tspan>·x<tspan baseline-shift="sub" font-size="9">k</tspan>(a))</text>
+    <text x="310" y="186" fill="#ccc" text-anchor="middle">+ Re(b<tspan baseline-shift="sub" font-size="9">k</tspan>·x<tspan baseline-shift="sub" font-size="9">k</tspan>(b))</text>
+    <text x="310" y="208" fill="#888" text-anchor="middle" font-size="10">a<tspan baseline-shift="sub" font-size="9">k</tspan>, b<tspan baseline-shift="sub" font-size="9">k</tspan> = how strongly / at what phase</text>
+    <!-- relu -->
+    <line x1="402" y1="165" x2="455" y2="165" stroke="#888" marker-end="url(#ah)"/>
+    <rect x="460" y="95" width="200" height="140" rx="6" fill="#16213e" stroke="#444"/>
+    <text x="560" y="117" fill="#e94560" text-anchor="middle" font-weight="bold">ReLU (h<tspan baseline-shift="sub" font-size="9">k</tspan>, d<tspan baseline-shift="sub" font-size="9">k</tspan>)</text>
+    <text x="560" y="139" fill="#ccc" text-anchor="middle">output ⊃ Re(h<tspan baseline-shift="sub" font-size="9">k</tspan>·x<tspan baseline-shift="sub" font-size="9">k</tspan>(a+b))</text>
+    <text x="560" y="155" fill="#ffb347" text-anchor="middle">h<tspan baseline-shift="sub" font-size="9">k</tspan> ≈ c · a<tspan baseline-shift="sub" font-size="9">k</tspan>·b<tspan baseline-shift="sub" font-size="9">k</tspan>   (sum term)</text>
+    <text x="560" y="177" fill="#ccc" text-anchor="middle">+ Re(d<tspan baseline-shift="sub" font-size="9">k</tspan>·x<tspan baseline-shift="sub" font-size="9">k</tspan>(a−b))</text>
+    <text x="560" y="193" fill="#888" text-anchor="middle" font-size="10">(difference term, unwanted)</text>
+    <text x="560" y="220" fill="#888" text-anchor="middle" font-size="10">the bend in ReLU multiplies the two clocks</text>
+    <!-- write -->
+    <line x1="662" y1="165" x2="715" y2="165" stroke="#888" marker-end="url(#ah)"/>
+    <rect x="720" y="110" width="150" height="110" rx="6" fill="#16213e" stroke="#444"/>
+    <text x="795" y="132" fill="#e94560" text-anchor="middle" font-weight="bold">write (w<tspan baseline-shift="sub" font-size="9">k</tspan>)</text>
+    <text x="795" y="156" fill="#ccc" text-anchor="middle">adds Re(w<tspan baseline-shift="sub" font-size="9">k</tspan>·e<tspan baseline-shift="super" font-size="9">iθc</tspan>)</text>
+    <text x="795" y="172" fill="#ccc" text-anchor="middle">to logit c, θ = 2πk/43</text>
+    <text x="795" y="200" fill="#888" text-anchor="middle" font-size="10">w<tspan baseline-shift="sub" font-size="9">k</tspan> = phase and size of</text>
+    <text x="795" y="212" fill="#888" text-anchor="middle" font-size="10">the neuron's output wave</text>
+    <!-- output -->
+    <line x1="872" y1="165" x2="905" y2="165" stroke="#888" marker-end="url(#ah)"/>
+    <circle cx="940" cy="165" r="30" fill="none" stroke="#555"/><line x1="940" y1="165" x2="968" y2="165" stroke="#fff" stroke-width="2"/>
+    <text x="940" y="215" fill="#ccc" text-anchor="middle">L<tspan baseline-shift="sub" font-size="9">k</tspan></text>
+    <text x="940" y="229" fill="#888" text-anchor="middle" font-size="10">output clock</text>
+    <!-- net effect -->
+    <path d="M 310 225 Q 560 310 940 205" fill="none" stroke="#ffb347" stroke-dasharray="5,4" marker-end="url(#ah)"/>
+    <text x="620" y="283" fill="#ffb347" text-anchor="middle">net effect of the neuron on L<tspan baseline-shift="sub" font-size="9">k</tspan>:  κ<tspan baseline-shift="sub" font-size="9">k</tspan> = h<tspan baseline-shift="sub" font-size="9">k</tspan>·w<tspan baseline-shift="sub" font-size="9">k</tspan>/2  multiplying x<tspan baseline-shift="sub" font-size="9">k</tspan>(a+b)</text>
+    <text x="620" y="300" fill="#888" text-anchor="middle" font-size="10">all neurons together:  L<tspan baseline-shift="sub" font-size="9">k</tspan> ≈ Λ<tspan baseline-shift="sub" font-size="9">k</tspan> · x<tspan baseline-shift="sub" font-size="9">k</tspan>(a+b),   Λ<tspan baseline-shift="sub" font-size="9">k</tspan> = Σ<tspan baseline-shift="sub" font-size="9">j</tspan> κ<tspan baseline-shift="sub" font-size="9">j</tspan>  (the white sum arrow)</text>
+    <!-- leftovers -->
+    <text x="560" y="55" fill="#888" text-anchor="middle" font-size="10">leftovers the model must cancel across neurons:  γ<tspan baseline-shift="sub" font-size="9">k</tspan> = h<tspan baseline-shift="sub" font-size="9">k</tspan>·w̄<tspan baseline-shift="sub" font-size="9">k</tspan>/2 (the wrong-way-round pairing of h<tspan baseline-shift="sub" font-size="9">k</tspan> and w<tspan baseline-shift="sub" font-size="9">k</tspan>)  and  d<tspan baseline-shift="sub" font-size="9">k</tspan>·w<tspan baseline-shift="sub" font-size="9">k</tspan>/2 (from the difference term)</text>
+  </svg>
+
+  <h2>The quantities, in plain words</h2>
+  <table class="glossary">
+    <tr><th>symbol (the buttons above drop the k; every neuron has one set per frequency)</th><th>what it is</th><th>what to look for</th></tr>
+    <tr><td><b>a<sub>k</sub></b>, <b>b<sub>k</sub></b></td><td>The neuron's two <i>read</i> coefficients: complex numbers saying how much of the frequency-k clock of token a (resp. token b) reaches the neuron's input, and with what phase shift. They come from the (k,0) and (0,k) entries of the 2-D Fourier transform of the neuron's pre-activation over all 43×43 inputs.</td><td>A neuron that does this frequency's job has |a| ≈ |b| and both well away from zero. A neuron whose colour (dominant read frequency) differs from the panel's k has small a, b here.</td></tr>
+    <tr><td><b>a<sub>k</sub>·b<sub>k</sub></b></td><td>The product of the two read coefficients. If the ReLU really multiplies the two clocks, the sum term it produces must have this phase.</td><td>Compare with h: the two clocks in the detail table should point the same way.</td></tr>
+    <tr><td><b>h<sub>k</sub></b></td><td>The <i>sum term</i>: the coefficient of x<sub>k</sub>(a+b) in the neuron's ReLU output (the (k,k) Fourier entry). It is the part of the neuron that knows a+b.</td><td>arg h ≈ arg(a·b); |h| grows with |a|·|b|. This is the "coordinate-wise complex multiplication".</td></tr>
+    <tr><td><b>d<sub>k</sub></b></td><td>The <i>difference term</i>: the coefficient of x<sub>k</sub>(a−b) (the (k,−k) entry). ReLU always makes it, with the same size as h.</td><td>It is unavoidable per neuron; the model can only arrange for it to cancel in the sum. See d·w/2.</td></tr>
+    <tr><td><b>w<sub>k</sub></b></td><td>The <i>write</i> coefficient: the frequency-k component of the neuron's weight vector into the logits (W<sub>o</sub>W<sub>U</sub>), i.e. the size and phase of the cosine wave it adds across the 43 answers.</td><td>For the right answer to win, the write phase must undo the read phases: arg w ≈ −arg h.</td></tr>
+    <tr><td><b>κ<sub>k</sub> = h<sub>k</sub>·w<sub>k</sub>/2</b></td><td>The neuron's net contribution to the output clock L<sub>k</sub>: the number multiplying x<sub>k</sub>(a+b) once the neuron's sum term is sent through its write vector.</td><td>Should sit on the positive real axis. Then every neuron pushes the output clock the same way and the white arrow (Λ<sub>k</sub> = Σκ) is long and real.</td></tr>
+    <tr><td><b>γ<sub>k</sub> = h<sub>k</sub>·w̄<sub>k</sub>/2</b></td><td>Leftover from pairing the sum term with the conjugate half of the write wave; it lands on a combination of a, b and the answer that is not a+b.</td><td>Any phase, but the sum over neurons should be small compared with Λ<sub>k</sub>.</td></tr>
+    <tr><td><b>d<sub>k</sub>·w<sub>k</sub>/2</b></td><td>The difference term after the write: what the neuron adds that depends on a−b.</td><td>Should cancel across neurons (small sum), otherwise a−b leaks into the answer.</td></tr>
+    <tr><td><b>Λ<sub>k</sub></b></td><td>The total: how strongly the whole MLP outputs the clock x<sub>k</sub>(a+b) at frequency k, measured directly from the logits.</td><td>Equals Σ<sub>j</sub> κ<sub>j</sub> if the picture is right; the stream check tab lists both.</td></tr>
+    <tr><td><b>dot colour</b></td><td>The neuron's dominant read frequency: the k at which its pre-activation has the most energy.</td><td>In each panel the panel's own colour should dominate; other colours are neurons that mostly serve another frequency.</td></tr>
+  </table>
+
+  <h2>Plane, rings, phase map</h2>
+  <table class="glossary">
+    <tr><td><b>Plane</b></td><td>The literal picture: each dot is the chosen quantity as a point in the complex plane (distance from the centre = size, angle = phase). The white arrow is the sum over neurons. Good for seeing whether κ lines up on the positive real axis and how much each neuron contributes.</td></tr>
+    <tr><td><b>Rings</b></td><td>Only the phase is kept: every dot is placed on a circle at its angle, and the circle it sits on is its dominant read frequency (outer ring = the first frequency in the list). This is for when sizes differ so much that small dots pile up at the centre of the plane; it answers "do the phases agree?" without the magnitudes in the way.</td></tr>
+    <tr><td><b>Phase map</b></td><td>A scatter of read phase against write phase: x = arg(a·b), the phase the ReLU hands on, and y = arg w, the phase the neuron writes with. Since κ = h·w/2 and h ∝ a·b, a real positive κ means arg w = −arg(a·b), so every working neuron should lie on the dashed anti-diagonal y = −x. Dot size is √|κ|, so the neurons that matter are the big ones; a big dot off the line is a neuron that is fighting the others.</td></tr>
+  </table>
+</div>
+
+<script src="timeline.js?v=5"></script>
+<script>
+const P = 43;
+let K = [], TH = [], KINV = [], nK = 0;          // the run's dominant frequencies, from its index.json
+const PALETTE = ['#e94560', '#3b82f6', '#22c55e', '#ffb347', '#c084fc', '#2dd4bf'];
+const FCOL = new Proxy({}, { get: (t, i) => PALETTE[(+i) % PALETTE.length] });
+const SUP = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+const CN = () => 'C' + SUP[nK % 10];
+let DATA = null;
+let mode = 'neurons';
+let quantity = 'kappa';
+let layout = 'plane';
+let aliveOnly = true;
+let hovered = -1;
+let selA = 20, selB = 30;
+let dots = null;        // [panel i] -> [{j, re, im, mag, x, y, r}]
+let dotMax = 1;
+let kappaMax = 1;
+let aliveMask = null;
+
+// ---------- complex helpers ----------
+const cmul = (p, q) => [p[0]*q[0] - p[1]*q[1], p[0]*q[1] + p[1]*q[0]];
+const cconj = p => [p[0], -p[1]];
+const cabs = p => Math.hypot(p[0], p[1]);
+const carg = p => Math.atan2(p[1], p[0]);
+const cscale = (p, s) => [p[0]*s, p[1]*s];
+const deg = r => (r * 180 / Math.PI);
+const fmtC = p => `${cabs(p).toFixed(3)} ∠${Math.round(deg(carg(p))) || 0}°`;
+function xk(i, n) { const t = -TH[i] * n; return [Math.cos(t), Math.sin(t)]; } // x_k(n)
+function setupK(index) {
+  K = index.K.slice(); nK = K.length;
+  TH = K.map(k => 2 * Math.PI * k / P);
+  KINV = K.map(k => { for (let x = 1; x < P; x++) if ((x * k) % P === 1) return x; });
+  DECODE_ACC = new Array(nK).fill(0);
+  document.getElementById('title-h1').textContent = `${CN()} Viewer`;
+  document.getElementById('hint').innerHTML = `mod 43 · frequencies ${K.join(', ')} · x<sub>k</sub>(a) = e<sup>−2πi k a/43</sup> · ← → step neurons / move b`;
+  document.getElementById('in-clocks-title').textContent = `input in ${CN()} (unit circle):`;
+  const panels = document.getElementById('panels');
+  const sz = nK > 3 ? 240 : 320;
+  panels.innerHTML = K.map((k, i) => `<div class="panel"><div class="ptitle" id="pt${i}"></div><canvas id="p${i}" width="${sz}" height="${sz}"></canvas><div class="psum" id="ps${i}"></div></div>`).join('');
+  document.getElementById('legend-k').innerHTML = `dot colour = neuron's dominant read frequency: ` + K.map((k, i) => `<i style="background:${FCOL[i]}"></i>k=${k}&nbsp; `).join('');
+  for (let i = 0; i < nK; i++) {
+    const c = document.getElementById('p' + i);
+    c.addEventListener('mousemove', e => {
+      const j = hitTest(i, e);
+      if (j !== hovered) { hovered = j; drawAllPanels(); showDetail(hovered); }
+    });
+    c.addEventListener('mouseleave', () => { if (hovered >= 0) { hovered = -1; drawAllPanels(); showDetail(-1); } });
+  }
+}
+function drawAllPanels() { for (let q = 0; q < nK; q++) drawPanel(q); }
+// L_k ∝ x_k(c) = e^{-iθ_k c}  ⇒  k·c ≡ round(−arg L · P/2π) (mod P)  ⇒  c = k⁻¹·that
+function decodeC(z, i) {
+  const m = ((Math.round(-carg(z) * P / (2 * Math.PI)) % P) + P) % P;
+  return (m * KINV[i]) % P;
+}
+
+// ---------- quantities ----------
+function getQ(n, i, q) {
+  switch (q) {
+    case 'kappa': return n.kappa[i];
+    case 'h': return n.h[i];
+    case 'ab': return cmul(n.a[i], n.b[i]);
+    case 'a': return n.a[i];
+    case 'b': return n.b[i];
+    case 'w': return n.w[i];
+    case 'gamma': return n.gamma[i];
+    case 'd': return n.d[i];
+    case 'dw': return cscale(cmul(n.d[i], n.w[i]), 0.5);
+  }
+}
+const QLABEL = {
+  kappa: 'κ = h·w/2 — coefficient of x_k(a+b) sent to output k',
+  h: 'h — ReLU output coefficient at (k,k): h_j ⊃ Re(h·x_k(a+b))',
+  ab: 'a·b — product of read coefficients (predicts phase of h)',
+  a: 'a — read coefficient on x_k(a)',
+  b: 'b — read coefficient on x_k(b)',
+  w: 'w — write coefficient at output frequency k',
+  gamma: 'γ = h·w̄/2 — junk coefficient of x_k(a+b+c)',
+  d: 'd — ReLU output coefficient at (k,−k): h_j ⊃ Re(d·x_k(a−b))',
+  dw: 'd·w/2 — junk coefficient of x_k(a−b−c)',
+};
+
+function isAlive(j) { return !aliveOnly || aliveMask[j]; }
+
+function computeDots() {
+  dots = Array.from({ length: nK }, () => []);
+  dotMax = 0;
+  const N = DATA.neurons;
+  for (let j = 0; j < N.length; j++) {
+    if (!isAlive(j)) continue;
+    const n = N[j];
+    for (let i = 0; i < nK; i++) {
+      let z;
+      if (mode === 'input') {
+        const act = DATA.acts[j][selA * P + selB];
+        z = cscale(n.w[i], act);           // neuron contribution to L_k(a,b)
+      } else {
+        z = getQ(n, i, quantity);
+      }
+      const mag = cabs(z);
+      if (mag > dotMax) dotMax = mag;
+      dots[i].push({ j, panel: i, re: z[0], im: z[1], mag });
+    }
+  }
+  if (dotMax === 0) dotMax = 1e-9;
+  kappaMax = 1e-9;
+  for (const n of N) for (let i = 0; i < nK; i++) kappaMax = Math.max(kappaMax, cabs(n.kappa[i]));
+  for (let i = 0; i < nK; i++) dots[i].sort((p, q) => p.mag - q.mag);
+}
+
+// ---------- panel drawing ----------
+function panelGeom(canvas) {
+  const W = canvas.width, H = canvas.height;
+  return { W, H, cx: W / 2, cy: H / 2, R: Math.min(W, H) / 2 - 24 };
+}
+function placeDot(d, g, domIdx) {
+  if (layout === 'phase' && mode === 'neurons') {
+    const n = DATA.neurons[d.j], i = d.panel;
+    const px = carg(cmul(n.a[i], n.b[i])), py = carg(n.w[i]);     // both in (−π, π]
+    d.x = g.cx + g.R * px / Math.PI; d.y = g.cy - g.R * py / Math.PI;
+  } else if (layout === 'rings' && mode === 'neurons') {
+    const rr = g.R * (1 - (nK > 1 ? 0.6 * domIdx / (nK - 1) : 0));
+    const ph = Math.atan2(d.im, d.re);
+    d.x = g.cx + rr * Math.cos(ph); d.y = g.cy - rr * Math.sin(ph);
+  } else {
+    const s = g.R / dotMax;
+    d.x = g.cx + d.re * s; d.y = g.cy - d.im * s;
+  }
+  if (layout === 'phase' && mode === 'neurons') {
+    const kap = cabs(DATA.neurons[d.j].kappa[d.panel]);
+    d.r = 1.5 + 6 * Math.sqrt(kap / kappaMax);
+  } else {
+    d.r = 2 + 6 * Math.sqrt(d.mag / dotMax);
+  }
+}
+function arrow(ctx, x0, y0, x1, y1, color, width) {
+  ctx.strokeStyle = color; ctx.lineWidth = width;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  const ang = Math.atan2(y1 - y0, x1 - x0);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1); ctx.lineTo(x1 - 8 * Math.cos(ang - 0.35), y1 - 8 * Math.sin(ang - 0.35));
+  ctx.moveTo(x1, y1); ctx.lineTo(x1 - 8 * Math.cos(ang + 0.35), y1 - 8 * Math.sin(ang + 0.35));
+  ctx.stroke();
+}
+
+function drawPanel(i) {
+  const canvas = document.getElementById('p' + i);
+  const ctx = canvas.getContext('2d');
+  const g = panelGeom(canvas);
+  ctx.clearRect(0, 0, g.W, g.H);
+  const k = K[i];
+  const rings = layout === 'rings' && mode === 'neurons';
+  const phase = layout === 'phase' && mode === 'neurons';
+
+  // axes / rings
+  ctx.strokeStyle = '#2a2a45'; ctx.lineWidth = 1;
+  if (phase) {
+    ctx.strokeRect(g.cx - g.R, g.cy - g.R, 2 * g.R, 2 * g.R);
+    ctx.beginPath(); ctx.moveTo(g.cx - g.R, g.cy); ctx.lineTo(g.cx + g.R, g.cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(g.cx, g.cy - g.R); ctx.lineTo(g.cx, g.cy + g.R); ctx.stroke();
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = '#555';
+    ctx.beginPath(); ctx.moveTo(g.cx - g.R, g.cy - g.R); ctx.lineTo(g.cx + g.R, g.cy + g.R); ctx.stroke(); // y = −x
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#555'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('arg(a·b)  −π … π', g.cx, g.H - 6);
+    ctx.save(); ctx.translate(10, g.cy); ctx.rotate(-Math.PI / 2); ctx.fillText('arg(w)  −π … π', 0, 0); ctx.restore();
+  } else if (rings) {
+    for (let d = 0; d < nK; d++) {
+      const rr = g.R * (1 - (nK > 1 ? 0.6 * d / (nK - 1) : 0));
+      ctx.beginPath(); ctx.arc(g.cx, g.cy, rr, 0, 2 * Math.PI); ctx.stroke();
+      ctx.fillStyle = '#555'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('read k=' + K[d], g.cx, g.cy - rr - 4);
+    }
+    ctx.beginPath(); ctx.moveTo(g.cx, g.cy); ctx.lineTo(g.cx + g.R, g.cy); ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.moveTo(0, g.cy); ctx.lineTo(g.W, g.cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(g.cx, 0); ctx.lineTo(g.cx, g.H); ctx.stroke();
+    ctx.beginPath(); ctx.arc(g.cx, g.cy, g.R, 0, 2 * Math.PI); ctx.stroke();
+    ctx.fillStyle = '#555'; ctx.font = '10px monospace'; ctx.textAlign = 'left';
+    ctx.fillText('Re', g.W - 18, g.cy - 5); ctx.fillText('Im', g.cx + 5, 12);
+    ctx.textAlign = 'right'; ctx.fillText(dotMax.toPrecision(3), g.W - 4, g.H - 6);
+  }
+
+  // target ray (input mode)
+  if (mode === 'input') {
+    const t = xk(i, (selA + selB) % P);
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = '#777'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(g.cx, g.cy); ctx.lineTo(g.cx + g.R * 1.05 * t[0], g.cy - g.R * 1.05 * t[1]); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#999'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('x_k(a+b)', g.cx + (g.R + 12) * t[0], g.cy - (g.R + 12) * t[1] + 3);
+  }
+
+  // dots
+  for (const d of dots[i]) {
+    const n = DATA.neurons[d.j];
+    placeDot(d, g, n.domIn);
+    ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, 2 * Math.PI);
+    ctx.fillStyle = FCOL[n.domIn];
+    ctx.globalAlpha = d.j === hovered ? 1 : 0.6;
+    ctx.fill(); ctx.globalAlpha = 1;
+    if (d.j === hovered) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke(); }
+  }
+
+  // sums
+  let sre = 0, sim = 0;
+  for (const d of dots[i]) { sre += d.re; sim += d.im; }
+  const s = g.R / dotMax;
+  let sumText;
+  if (mode === 'input') {
+    const bo = DATA.totals.biasOut[i];
+    const tot = [sre + bo[0], sim + bo[1]];
+    if (!rings) {
+      arrow(ctx, g.cx, g.cy, g.cx + sre * s, g.cy - sim * s, '#ffb347', 2);
+      arrow(ctx, g.cx + sre * s, g.cy - sim * s, g.cx + tot[0] * s, g.cy - tot[1] * s, '#aaa', 1.5);
+      arrow(ctx, g.cx, g.cy, g.cx + tot[0] * s, g.cy - tot[1] * s, '#fff', 2.5);
+    }
+    const dec = decodeC(tot, i);
+    const ok = dec === (selA + selB) % P;
+    sumText = `L_${k} = ${fmtC(tot)} → decodes c = ${dec} ${ok ? '✓' : '✗'} (alone: ${DECODE_ACC[i]}% of inputs)  neurons ${cabs([sre, sim]).toFixed(1)}, bias ${cabs(bo).toFixed(2)}`;
+  } else {
+    if (!rings && !phase) arrow(ctx, g.cx, g.cy, g.cx + sre * s, g.cy - sim * s, '#fff', 2.5);
+    sumText = phase ? `dot size ∝ √|κ| · dashed line: arg w = −arg(a·b)` : `Σ = ${fmtC([sre, sim])}`;
+    if (quantity === 'kappa' && !phase) {
+      const L = DATA.totals.Lambda3d[i];
+      sumText += `   Λ_${k} (3-D DFT of logits) = ${fmtC(L)}`;
+    }
+  }
+  ctx.fillStyle = '#ddd'; ctx.font = '12px monospace'; ctx.textAlign = 'left';
+  ctx.fillText(`output k = ${k}`, 6, 14);
+  document.getElementById('pt' + i).textContent = mode === 'input'
+    ? `contributions h_j(a,b)·w_j,${k} to L_${k}` : `${quantity === 'kappa' ? 'κ' : quantity} at k = ${k}`;
+  document.getElementById('ps' + i).textContent = sumText;
+}
+
+function drawPanels() { computeDots(); drawAllPanels(); }
+
+function hitTest(i, e) {
+  const canvas = document.getElementById('p' + i);
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * canvas.width / rect.width;
+  const my = (e.clientY - rect.top) * canvas.height / rect.height;
+  let best = -1, bestD = Infinity;
+  const arr = dots[i];
+  for (let q = arr.length - 1; q >= 0; q--) {
+    const d = arr[q];
+    const dd = (mx - d.x) ** 2 + (my - d.y) ** 2;
+    const hr = d.r + 3;
+    if (dd < hr * hr && dd < bestD) { bestD = dd; best = d.j; }
+  }
+  return best;
+}
+
+// ---------- detail panel ----------
+function miniClock(z, color, refZ) {
+  // returns an <canvas> element with hand at arg z; optional faint reference hand
+  const c = document.createElement('canvas'); c.width = 36; c.height = 36;
+  const ctx = c.getContext('2d');
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(18, 18, 15, 0, 2 * Math.PI); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(33, 18); ctx.lineTo(36, 18); ctx.stroke();
+  if (refZ && cabs(refZ) > 0) {
+    const ph = carg(refZ);
+    ctx.strokeStyle = '#777'; ctx.lineWidth = 3; ctx.setLineDash([2, 2]);
+    ctx.beginPath(); ctx.moveTo(18, 18); ctx.lineTo(18 + 14 * Math.cos(ph), 18 - 14 * Math.sin(ph)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (cabs(z) > 0) {
+    const ph = carg(z);
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(18, 18); ctx.lineTo(18 + 14 * Math.cos(ph), 18 - 14 * Math.sin(ph)); ctx.stroke();
+  }
+  return c;
+}
+
+function seqColor(t) {
+  t = Math.max(0, Math.min(1, t));
+  let r, g, b;
+  if (t < 0.25) { const s = t / 0.25; r = 15 + s * 30; g = 15 + s * 20; b = 40 + s * 100; }
+  else if (t < 0.5) { const s = (t - 0.25) / 0.25; r = 45 - s * 15; g = 35 + s * 100; b = 140 + s * 20; }
+  else if (t < 0.75) { const s = (t - 0.5) / 0.25; r = 30 + s * 130; g = 135 + s * 60; b = 160 - s * 100; }
+  else { const s = (t - 0.75) / 0.25; r = 160 + s * 95; g = 195 + s * 55; b = 60 - s * 40; }
+  return [r | 0, g | 0, b | 0];
+}
+
+function drawHeat(j) {
+  const canvas = document.getElementById('heat-canvas');
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(129, 129);
+  const act = DATA.acts[j];
+  let vmax = 0; for (const v of act) if (v > vmax) vmax = v;
+  for (let a = 0; a < P; a++) for (let b = 0; b < P; b++) {
+    const [r, g, bb] = seqColor(vmax > 0 ? act[a * P + b] / vmax : 0);
+    for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) {
+      const idx = ((a * 3 + dy) * 129 + (b * 3 + dx)) * 4;
+      img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = bb; img.data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  if (mode === 'input') {
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+    ctx.strokeRect(selB * 3 - 0.5, selA * 3 - 0.5, 4, 4);
+  }
+}
+
+function showDetail(j) {
+  const head = document.getElementById('detail-head');
+  const meta = document.getElementById('detail-meta');
+  const table = document.getElementById('clock-table');
+  if (j < 0) {
+    head.textContent = 'Hover a dot';
+    meta.innerHTML = '';
+    table.innerHTML = '';
+    document.getElementById('heat-canvas').getContext('2d').clearRect(0, 0, 129, 129);
+    return;
+  }
+  const n = DATA.neurons[j];
+  head.textContent = `Neuron ${j}`;
+  const di = n.domIn;
+  const ab = cmul(n.a[di], n.b[di]);
+  let phErr = deg(carg(n.h[di]) - carg(ab)); phErr = ((phErr + 540) % 360) - 180;
+  let extra = '';
+  if (mode === 'input') {
+    const act = DATA.acts[j][selA * P + selB];
+    extra = `<br>activation at (a=${selA}, b=${selB}): <b style="color:#eee">${act.toFixed(3)}</b>`;
+    for (let i = 0; i < nK; i++) extra += ` · contrib to L_${K[i]}: ${fmtC(cscale(n.w[i], act))}`;
+  }
+  meta.innerHTML =
+    `dominant read freq <b style="color:${FCOL[di]}">k=${K[di]}</b> (purity ${(n.purity * 100).toFixed(1)}%), ` +
+    `dominant write freq <b style="color:${FCOL[n.domOut]}">k=${K[n.domOut]}</b><br>` +
+    `pre-activation = ${n.bias.toFixed(3)} + Re(a·x_k(a) + b·x_k(b)) — axis terms at ${K.join(',')} explain ${(n.fracPre * 100).toFixed(1)}% of its variance<br>` +
+    `ReLU output: ‖h_j‖ = ${n.norm}, DC ${n.hdc.toFixed(3)}; variance in x_k(a+b) terms ${(n.fracHsum * 100).toFixed(0)}%, ` +
+    `x_k(a−b) terms ${(n.fracHdif * 100).toFixed(0)}%, pure a / pure b terms ${(n.fracHaxes * 100).toFixed(0)}%<br>` +
+    `write vector w_j(c): ${(n.fracW * 100).toFixed(1)}% of energy at freqs ${K.join(',')} · ` +
+    `<b>arg h − arg(a·b) at k=${K[di]}: ${phErr.toFixed(1)}°</b>` + extra;
+  drawHeat(j);
+  let html = '<tr><th>k</th><th>a</th><th>b</th><th>a·b</th><th>h</th><th>w</th><th>κ = h·w/2</th></tr>';
+  for (let i = 0; i < nK; i++) {
+    const cells = [n.a[i], n.b[i], cmul(n.a[i], n.b[i]), n.h[i], n.w[i], n.kappa[i]];
+    html += `<tr><td class="k" style="color:${FCOL[i]}">${K[i]}</td>`;
+    for (let c = 0; c < cells.length; c++) {
+      html += `<td><div class="clock" data-i="${i}" data-c="${c}"></div><div class="val">${fmtC(cells[c])}</div></td>`;
+    }
+    html += '</tr>';
+  }
+  table.innerHTML = html;
+  table.querySelectorAll('.clock').forEach(el => {
+    const i = +el.dataset.i, c = +el.dataset.c;
+    const cells = [n.a[i], n.b[i], cmul(n.a[i], n.b[i]), n.h[i], n.w[i], n.kappa[i]];
+    const ref = c === 3 ? cmul(n.a[i], n.b[i]) : null;   // h vs predicted a·b
+    el.appendChild(miniClock(cells[c], FCOL[i], ref));
+  });
+}
+
+// ---------- input mode ----------
+function drawGrid() {
+  const canvas = document.getElementById('grid-canvas');
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(258, 258);
+  // margin = correct logit − best other
+  const margins = new Float64Array(P * P);
+  let mmax = 0;
+  for (let a = 0; a < P; a++) for (let b = 0; b < P; b++) {
+    const row = DATA.logits[a * P + b]; const t = (a + b) % P;
+    let best = -Infinity;
+    for (let c = 0; c < P; c++) if (c !== t && row[c] > best) best = row[c];
+    margins[a * P + b] = row[t] - best;
+    if (margins[a * P + b] > mmax) mmax = margins[a * P + b];
+  }
+  for (let a = 0; a < P; a++) for (let b = 0; b < P; b++) {
+    const [r, g, bb] = seqColor(margins[a * P + b] / mmax);
+    for (let dy = 0; dy < 6; dy++) for (let dx = 0; dx < 6; dx++) {
+      const idx = ((a * 6 + dy) * 258 + (b * 6 + dx)) * 4;
+      img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = bb; img.data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  ctx.strokeRect(selB * 6, selA * 6, 6, 6);
+  const row = DATA.logits[selA * P + selB];
+  let am = 0; for (let c = 1; c < P; c++) if (row[c] > row[am]) am = c;
+  document.getElementById('ab-info').innerHTML =
+    `target (a+b) mod 43 = <b style="color:#eee">${(selA + selB) % P}</b>, argmax logit = <b style="color:${am === (selA + selB) % P ? '#22c55e' : '#e94560'}">${am}</b>, margin ${margins[selA * P + selB].toFixed(2)}`;
+}
+
+function drawInClocks() {
+  const box = document.getElementById('in-clocks');
+  box.innerHTML = '';
+  for (let i = 0; i < nK; i++) {
+    const wrap = document.createElement('div'); wrap.className = 'inclock';
+    wrap.style.borderLeft = `2px solid ${FCOL[i]}`; wrap.style.paddingLeft = '6px';
+    const row = document.createElement('div'); row.style.display = 'flex'; row.style.gap = '4px';
+    const za = xk(i, selA), zb = xk(i, selB), zab = xk(i, (selA + selB) % P);
+    for (const [z, lab] of [[za, 'x(a)'], [zb, 'x(b)'], [zab, 'x(a)·x(b)']]) {
+      const d = document.createElement('div');
+      d.appendChild(miniClock(z, FCOL[i]));
+      const l = document.createElement('div'); l.textContent = lab; d.appendChild(l);
+      row.appendChild(d);
+    }
+    const t = document.createElement('div'); t.textContent = 'k = ' + K[i]; t.style.color = FCOL[i];
+    wrap.appendChild(t); wrap.appendChild(row);
+    box.appendChild(wrap);
+  }
+}
+
+function drawLogits() {
+  const canvas = document.getElementById('logits-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * devicePixelRatio; canvas.height = H * devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.clearRect(0, 0, W, H);
+  const margin = { top: 8, bottom: 22, left: 45, right: 10 };
+  const pw = W - margin.left - margin.right, ph = H - margin.top - margin.bottom;
+  const row = DATA.logits[selA * P + selB];
+  const L = DATA.Lhat[selA * P + selB];
+  let dc = 0; for (const v of row) dc += v; dc /= P;
+  const recon = [];
+  for (let c = 0; c < P; c++) {
+    let v = dc;
+    for (let i = 0; i < nK; i++) v += L[i][0] * Math.cos(TH[i] * c) - L[i][1] * Math.sin(TH[i] * c); // Re(L e^{iθc})
+    recon.push(v);
+  }
+  let vmin = Infinity, vmax = -Infinity;
+  for (let c = 0; c < P; c++) { vmin = Math.min(vmin, row[c], recon[c]); vmax = Math.max(vmax, row[c], recon[c]); }
+  const pad = (vmax - vmin) * 0.05; vmin -= pad; vmax += pad;
+  const y = v => margin.top + ph * (1 - (v - vmin) / (vmax - vmin));
+  const bw = pw / P;
+  const t = (selA + selB) % P;
+  for (let c = 0; c < P; c++) {
+    ctx.fillStyle = c === t ? '#e94560' : '#4a5a8a';
+    const y0 = y(row[c]), yb = y(Math.max(vmin, Math.min(0, vmax)));
+    ctx.fillRect(margin.left + c * bw + 1, Math.min(y0, yb), bw - 2, Math.abs(yb - y0));
+  }
+  ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 1.5; ctx.beginPath();
+  for (let c = 0; c < P; c++) { const px = margin.left + (c + 0.5) * bw; c ? ctx.lineTo(px, y(recon[c])) : ctx.moveTo(px, y(recon[c])); }
+  ctx.stroke();
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  for (let c = 0; c < P; c += 5) ctx.fillText(c, margin.left + (c + 0.5) * bw, H - 6);
+  ctx.textAlign = 'right';
+  ctx.fillText(vmax.toFixed(0), margin.left - 4, margin.top + 10);
+  ctx.fillText(vmin.toFixed(0), margin.left - 4, H - margin.bottom);
+  let err = 0, tot = 0;
+  for (let c = 0; c < P; c++) { err += (row[c] - recon[c]) ** 2; tot += (row[c] - dc) ** 2; }
+  document.getElementById('logits-title').innerHTML =
+    `Logits at (a=${selA}, b=${selB}) — bars = model, <span style="color:#ffb347">line</span> = DC + Σ<sub>k</sub> Re(L<sub>k</sub> e<sup>iθ<sub>k</sub>c</sup>) from the ${nK} frequencies (${(100 * (1 - err / tot)).toFixed(2)}% of variance)`;
+}
+
+function setAB(a, b) {
+  selA = ((a % P) + P) % P; selB = ((b % P) + P) % P;
+  document.getElementById('in-a').value = selA;
+  document.getElementById('in-b').value = selB;
+  draw();
+}
+
+// ---------- stream check ----------
+function svChart(title, sv, highlight, note) {
+  const box = document.createElement('div'); box.className = 'svbox';
+  const h = document.createElement('h3'); h.textContent = title; box.appendChild(h);
+  const c = document.createElement('canvas'); c.width = 330; c.height = 150; box.appendChild(c);
+  const nt = document.createElement('div'); nt.style.cssText = 'color:#888;font-size:11px;margin-top:4px'; nt.textContent = note; box.appendChild(nt);
+  const ctx = c.getContext('2d');
+  const n = Math.min(sv.length, 24);
+  const lmax = Math.log10(sv[0]), lmin = Math.min(Math.log10(Math.max(sv[n - 1], 1e-6)), lmax - 1);
+  const bw = (330 - 40) / n;
+  for (let i = 0; i < n; i++) {
+    const v = Math.log10(Math.max(sv[i], 1e-6));
+    const hgt = 120 * (v - lmin) / (lmax - lmin);
+    ctx.fillStyle = i < highlight ? '#e94560' : '#555';
+    ctx.fillRect(36 + i * bw + 1, 128 - hgt, bw - 2, hgt);
+  }
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+  ctx.fillText(sv[0].toPrecision(3), 34, 12);
+  ctx.fillText(Math.pow(10, lmin).toPrecision(2), 34, 128);
+  ctx.textAlign = 'center';
+  for (let i = 0; i < n; i += 4) ctx.fillText(i + 1, 36 + (i + 0.5) * bw, 142);
+  return box;
+}
+
+function drawStream() {
+  const S = DATA.stream;
+  const row = document.getElementById('sv-row');
+  row.innerHTML = '';
+  row.appendChild(svChart('W_E (43 residue rows, centred): singular values', S.svWE, 2 * nK, `log scale · ${2 * nK} dominant = ${CN()}`));
+  row.appendChild(svChart('stream x₁ at the answer position (varying part)', S.svX1, 4 * nK, `log scale · ${4 * nK} dominant = ${CN()} for a ⊕ ${CN()} for b`));
+  row.appendChild(svChart('MLP output (varying part)', S.svMLP, 2 * nK, `log scale · ${2 * nK} dominant = ${CN()}`));
+  const pct = v => (v === undefined || v === null) ? '—' : (100 * v).toFixed(1) + '%';
+  const f = S.fracWE, am = S.attnMean;
+  document.getElementById('stream-box').innerHTML = `
+    <h2>Does the 128-dim stream factor through ${CN()}? — ${DATA.stream.single ? 'final model' : 'training step ' + S.step}</h2>
+    <table class="stats">
+      <tr class="sec"><td colspan="2">0. Training state</td></tr>
+      <tr><td>train loss / accuracy (training pairs)</td><td>${S.train_loss.toExponential(2)} / ${pct(S.train_acc)}</td></tr>
+      <tr><td>test loss / accuracy (held-out pairs)</td><td>${S.test_loss.toExponential(2)} / ${pct(S.test_acc)}</td></tr>
+      <tr><td>accuracy on all 1849 pairs</td><td>${pct(S.accuracy)}</td></tr>
+      <tr class="sec"><td colspan="2">1. Embedding W_E (one-hot → stream)</td></tr>
+      <tr><td>energy at freq ${K.join(' / ')} (conjugate pairs)</td><td>${K.map(k => pct(f[k])).join(' / ')}</td></tr>
+      <tr><td>energy at DC / all other frequencies</td><td>${pct(f.dc)} / ${pct(1 - f.dc - K.reduce((p, k) => p + f[k], 0))}</td></tr>
+      <tr class="sec"><td colspan="2">2. Attention (answer position, mean over inputs)</td></tr>
+      <tr><td>heads 0–3 → token a</td><td>${am.map(r => r[0].toFixed(3)).join(' / ')}</td></tr>
+      <tr><td>heads 0–3 → token b</td><td>${am.map(r => r[1].toFixed(3)).join(' / ')}</td></tr>
+      <tr><td>heads 0–3 → the "?" token</td><td>${am.map(r => r[2].toFixed(3)).join(' / ')}</td></tr>
+      <tr class="sec"><td colspan="2">3. Stream x₁ entering the MLP</td></tr>
+      <tr><td>energy in OV<sub>heads 0,1</sub>(S_in) ⊕ OV<sub>heads 2,3</sub>(S_in), ${4 * nK} dims built from freqs ${K.join(', ')}</td><td>${pct(S.fracX1inOV)}</td></tr>
+      <tr class="sec"><td colspan="2">4. MLP output and logits</td></tr>
+      <tr><td>MLP output energy in the ${2 * nK}-dim unembedding subspace S_out (freqs ${K.join(', ')})</td><td>${pct(S.fracMLPinOut)}</td></tr>
+      <tr><td>3-D DFT energy of logits at (k,k,−k), k ∈ {${K.join(',')}}</td><td>${pct(S.frac3d)}</td></tr>
+      <tr><td>rms of the logits (per input, mean removed)</td><td>${S.rmsLogits.toFixed(2)}</td></tr>
+      <tr class="sec"><td colspan="2">5. Accuracy after projecting the stream (all 1849 inputs)</td></tr>
+      <tr><td>x₁ varying part → ${2 * nK}-dim embedding subspace S_in</td><td>${pct(S.accInEmb)}</td></tr>
+      <tr><td>x₁ varying part → ${4 * nK}-dim OV(S_in)⊕OV(S_in)</td><td>${pct(S.accInOV)}</td></tr>
+      <tr><td>MLP output varying part → ${2 * nK}-dim S_out before unembedding</td><td>${pct(S.accOut)}</td></tr>
+      <tr class="sec"><td colspan="2">6. MLP in ${CN()} coordinates (${DATA.totals.alive} alive neurons: ${DATA.totals.domInCounts.map((c, i) => `${c} at k=${K[i]}`).join(', ')})</td></tr>
+      ${K.map((k, i) => `<tr><td>k=${k}: Σ_j κ_j = Σ_j h_j·w_j/2 (should be real, &gt;0)</td><td>${fmtC(DATA.totals.sumKappa[i])}</td></tr>
+      <tr><td>k=${k}: Λ_k = mean of L_k·x̄_k(a+b) over inputs (same thing, from the logits)</td><td>${fmtC(DATA.totals.Lambda3d[i])}</td></tr>
+      <tr><td>k=${k}: cross-frequency neurons' share of Σκ · |Σγ| junk · |Σ d·w/2| junk</td><td>${cabs(DATA.totals.sumKappaCross[i]).toFixed(2)} · ${cabs(DATA.totals.sumGamma[i]).toFixed(2)} · ${cabs(DATA.totals.sumDw[i]).toFixed(2)}</td></tr>`).join('')}
+    </table>`;
+}
+
+// ---------- explanations ----------
+const EXPLAIN = {
+  get neurons() { return `Each dot is one MLP neuron, drawn in the complex plane of output frequency k (one panel per frequency: ${K.join(', ')}). ` +
+    `Writing x<sub>k</sub>(n) = e<sup>−2πikn/43</sup>, neuron j reads <code>pre_j = bias + Re(a·x_k(a) + b·x_k(b))</code>, ` +
+    `its ReLU output contains <code>Re(h·x_k(a+b))</code> with <code>h ∝ a·b</code> (complex multiplication: the clocks for h and a·b in the detail table should agree), ` +
+    `and it writes <code>Re(w·e<sup>iθc</sup>)</code> to the logits. Its net effect on output coordinate L<sub>k</sub> is the coefficient ` +
+    `<code>κ = h·w/2</code> of x<sub>k</sub>(a+b). If the MLP computes coordinate-wise multiplication in ${CN()}, every κ lies on the positive real axis of its own frequency and the white sum arrow equals Λ<sub>k</sub>. ` +
+    `Switch quantity to see the read side (a, b), the ReLU side (h, d) and the write side (w), or the junk terms γ and d·w that must cancel.`; },
+  get input() { return `Pick an input (a, b). Its image in ${CN()} is the ${nK} unit-circle points x<sub>k</sub>(a), x<sub>k</sub>(b); the target is their product x<sub>k</sub>(a+b) (dashed ray). ` +
+    `Each dot is neuron j's actual contribution <code>h_j(a,b)·w_j,k</code> to the output coordinate <code>L_k = (2/43)·DFT_c(logits)[k]</code>; ` +
+    `only neurons that fire are visible, each on the ray of its write phase. Orange arrow = sum over neurons, grey = the bias b<sub>o</sub>W<sub>U</sub>, white = L<sub>k</sub> (the MLP output is the whole stream before unembedding: there is no skip connection). ` +
+    `Each frequency alone decodes c = k⁻¹·round(−arg(L<sub>k</sub>)·43/2π) mod 43; a single frequency is not always right (the panel captions give the hit rate), but the ${nK} cosines together peak at a+b. The logit vector on the right is reconstructed from just the ${nK} L<sub>k</sub>.`; },
+  get stream() { return `Singular values and projection tests for a model whose embedding uses the frequencies ${K.join(', ')}. The embedding is ${2 * nK}-dimensional (one ${CN()}). The attention heads copy token a (heads 0, 1) and token b (heads 2, 3) ` +
+    `into two different ${2 * nK}-dim subspaces, so the stream entering the MLP is ${CN()} ⊕ ${CN()} = ${4 * nK} real dims, not ${2 * nK} — projecting onto the embedding's own ${2 * nK} dims destroys the model, ` +
+    `projecting onto the ${4 * nK} keeps it. After the MLP the stream is again one ${CN()} (${2 * nK} dims, the unembedding's frequency subspace).` + (DATA.stream.single ? '' : ' Move the time slider to watch these numbers emerge during training.'); },
+};
+
+// ---------- main draw / events ----------
+function draw() {
+  if (!DATA) return;
+  const isN = mode === 'neurons', isI = mode === 'input', isS = mode === 'stream';
+  document.getElementById('qty-group').style.display = isN ? '' : 'none';
+  document.getElementById('layout-group').style.display = isN ? '' : 'none';
+  document.getElementById('alive-group').style.display = isS ? 'none' : '';
+  document.getElementById('input-row').style.display = isI ? '' : 'none';
+  document.getElementById('panels').style.display = isS ? 'none' : '';
+  document.getElementById('legend').style.display = isS ? 'none' : '';
+  document.getElementById('stream-view').style.display = isS ? '' : 'none';
+  document.getElementById('stream-box').style.display = isS ? '' : 'none';
+  document.getElementById('detail-box').style.display = isS ? 'none' : '';
+  document.getElementById('logits-box').style.display = isI ? '' : 'none';
+  document.getElementById('explain').innerHTML = EXPLAIN[mode];
+  document.getElementById('legend-extra').textContent = isN ? ` · ${QLABEL[quantity]}` : '';
+  if (isS) { drawStream(); return; }
+  if (isI) { drawGrid(); drawInClocks(); drawLogits(); }
+  drawPanels();
+  showDetail(hovered);
+}
+
+let DECODE_ACC = [];
+function computeDecodeAcc() {
+  for (let i = 0; i < nK; i++) {
+    let ok = 0;
+    for (let a = 0; a < P; a++) for (let b = 0; b < P; b++) {
+      if (decodeC(DATA.Lhat[a * P + b][i], i) === (a + b) % P) ok++;
+    }
+    DECODE_ACC[i] = (100 * ok / (P * P)).toFixed(1);
+  }
+}
+function prepareData() {
+  const N = DATA.neurons;
+  computeDecodeAcc();
+  let nmax = 0; for (const n of N) if (n.norm > nmax) nmax = n.norm;
+  aliveMask = N.map(n => n.norm > 0.05 * nmax);
+  if (hovered >= N.length) hovered = -1;
+}
+function init() {
+  const N = DATA.neurons;
+  document.getElementById('alive-btn').classList.toggle('active', aliveOnly);
+
+  document.querySelectorAll('.mode-btn').forEach(b => b.addEventListener('click', () => {
+    mode = b.dataset.mode; hovered = -1;
+    document.querySelectorAll('.mode-btn').forEach(x => x.classList.toggle('active', x.dataset.mode === mode));
+    b.blur(); draw();
+  }));
+  document.querySelectorAll('.qty-btn').forEach(b => b.addEventListener('click', () => {
+    quantity = b.dataset.q;
+    document.querySelectorAll('.qty-btn').forEach(x => x.classList.toggle('active', x.dataset.q === quantity));
+    b.blur(); draw();
+  }));
+  document.querySelectorAll('.layout-btn').forEach(b => b.addEventListener('click', () => {
+    layout = b.dataset.l;
+    document.querySelectorAll('.layout-btn').forEach(x => x.classList.toggle('active', x.dataset.l === layout));
+    b.blur(); draw();
+  }));
+  document.getElementById('alive-btn').addEventListener('click', e => {
+    aliveOnly = !aliveOnly; e.target.classList.toggle('active', aliveOnly); e.target.blur(); draw();
+  });
+  const grid = document.getElementById('grid-canvas');
+  grid.addEventListener('click', e => {
+    const r = grid.getBoundingClientRect();
+    const b = Math.floor((e.clientX - r.left) * 258 / r.width / 6), a = Math.floor((e.clientY - r.top) * 258 / r.height / 6);
+    if (a >= 0 && a < P && b >= 0 && b < P) setAB(a, b);
+  });
+  document.getElementById('in-a').addEventListener('change', e => setAB(+e.target.value, selB));
+  document.getElementById('in-b').addEventListener('change', e => setAB(selA, +e.target.value));
+  document.addEventListener('keydown', e => {
+    if (mode === 'neurons' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      const step = e.key === 'ArrowRight' ? 1 : -1;
+      let j = hovered;
+      for (let t = 0; t < N.length; t++) { j = ((j + step) % N.length + N.length) % N.length; if (isAlive(j)) break; }
+      hovered = j; drawAllPanels(); showDetail(hovered); e.preventDefault(); return;
+    }
+    if (mode !== 'input' || e.target.tagName === 'INPUT') return;
+    if (e.key === 'ArrowLeft') { setAB(selA, selB - 1); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { setAB(selA, selB + 1); e.preventDefault(); }
+    if (e.key === 'ArrowUp') { setAB(selA - 1, selB); e.preventDefault(); }
+    if (e.key === 'ArrowDown') { setAB(selA + 1, selB); e.preventDefault(); }
+  });
+  window.addEventListener('resize', () => { if (mode === 'input') drawLogits(); });
+}
+
+// All Cⁿ data is recomputed from the raw weights of the selected training snapshot (model_worker.js).
+let initialized = false;
+Timeline.init({
+  container: '#timeline', modes: ['c3'],
+  onIndex: setupK,
+  onData: (step, m, data) => {
+    DATA = data;
+    DATA.stream.single = Timeline.index.single;
+    prepareData();
+    if (!initialized) { initialized = true; init(); }
+    draw();
+  },
+  onError: msg => { document.getElementById('explain').textContent = msg; },
+});
+</script>
+</body>
+</html>

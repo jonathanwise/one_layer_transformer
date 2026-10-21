@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Phase Viewer — Grokked mod-43</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+#top-bar { padding: 10px 20px; background: #16213e; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+#top-bar h1 { font-size: 16px; font-weight: 600; color: #ccc; }
+#top-bar span { color: #888; }
+.mode-select { display: flex; gap: 4px; }
+.freq-btn { background: #0f3460; color: #888; border: 1px solid #444; padding: 6px 16px; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 14px; }
+.freq-btn:hover { background: #1a5276; }
+.freq-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+
+#main { display: flex; padding: 15px; gap: 20px; align-items: flex-start; }
+#left { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+#heatmap-label { color: #aaa; font-size: 12px; text-align: center; max-width: 460px; }
+#heatmap-canvas { cursor: crosshair; image-rendering: pixelated; border: 1px solid #333; }
+#hover-info { color: #aaa; font-size: 12px; text-align: center; min-height: 18px; }
+
+#right { display: flex; flex-direction: column; gap: 12px; flex: 1; min-width: 300px; max-width: 600px; align-self: flex-start; }
+.info-box { background: #16213e; border: 1px solid #333; border-radius: 5px; padding: 12px; }
+.info-box h2 { font-size: 13px; color: #888; margin-bottom: 8px; }
+.chart-canvas { width: 100%; }
+#phasor-box { min-height: 400px; }
+#phasor-box canvas { display: block; margin: 0 auto; }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <h1>Phase Viewer</h1>
+  <span>How neuron phases add to produce the correct output</span>
+  <div class="mode-select">
+    <button class="freq-btn active" data-k="1">k = 1</button>
+    <button class="freq-btn" data-k="9">k = 9</button>
+    <button class="freq-btn" data-k="14">k = 14</button>
+  </div>
+</div>
+
+<div id="main">
+  <div id="left">
+    <div id="heatmap-label"></div>
+    <canvas id="contrib-canvas" width="430" height="430" style="border:1px solid #333; image-rendering:pixelated;"></canvas>
+    <div id="contrib-label" style="color:#aaa; font-size:12px; text-align:center;">
+      Hover a bar at right to see per-neuron contributions above
+    </div>
+    <canvas id="heatmap-canvas" width="430" height="430"></canvas>
+    <div id="hover-info">&nbsp;</div>
+  </div>
+  <div id="right">
+    <div class="info-box">
+      <h2 id="bar-title">Output by target residue c = (a+b) mod 43</h2>
+      <canvas class="chart-canvas" id="bar-canvas" height="160"></canvas>
+    </div>
+    <div class="info-box" id="phasor-box">
+      <h2 id="phasor-title">Hover a bar to see neuron phasors for that target</h2>
+      <canvas id="phasor-canvas" width="360" height="360"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+const P = 43;
+let DATA = null;
+let currentK = 1;
+let hoverK1 = -1, hoverK2 = -1;
+let selectedTarget = -1; // target residue c for phasor breakdown
+
+// --- Color ---
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+function hue2rgb(p, q, t) {
+  if (t < 0) t += 1; if (t > 1) t -= 1;
+  if (t < 1/6) return p + (q - p) * 6 * t;
+  if (t < 1/2) return q;
+  if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+  return p;
+}
+function domainColor(re, im, maxMag) {
+  const mag = Math.sqrt(re * re + im * im);
+  const phase = Math.atan2(im, re);
+  const hue = ((phase / (2 * Math.PI)) + 1) % 1;
+  const lightness = maxMag > 0 ? mag / maxMag : 0;
+  return hslToRgb(hue, 1, lightness * 0.5);
+}
+
+// Phase index: token a → phase slot = (k*a) mod P
+// This reorders tokens so that the phase increases uniformly
+function phaseSlot(a, k) { return (k * a) % P; }
+// Inverse: phase slot s → token a = (k_inv * s) mod P
+function phaseSlotInv(s, k_inv) { return (k_inv * s) % P; }
+
+function getFreqData() { return DATA.freqs[String(currentK)]; }
+
+// --- Heatmap: domain-colored O_k(a,b), axes reindexed by phase ---
+// Cache the rendered ImageData so hover only redraws the overlay
+let heatmapCache = null; // ImageData
+
+function renderHeatmapImage() {
+  const canvas = document.getElementById('heatmap-canvas');
+  const fd = getFreqData();
+  const k_inv = fd.k_inv;
+
+  const reRe = new Float64Array(P * P);
+  const reIm = new Float64Array(P * P);
+  let maxMag = 0;
+  for (let s1 = 0; s1 < P; s1++) {
+    for (let s2 = 0; s2 < P; s2++) {
+      const a = phaseSlotInv(s1, k_inv);
+      const b = phaseSlotInv(s2, k_inv);
+      const idx_orig = a * P + b;
+      const idx_new = s1 * P + s2;
+      reRe[idx_new] = fd.O_re[idx_orig];
+      reIm[idx_new] = fd.O_im[idx_orig];
+      const m = Math.sqrt(reRe[idx_new] ** 2 + reIm[idx_new] ** 2);
+      if (m > maxMag) maxMag = m;
+    }
+  }
+  if (maxMag === 0) maxMag = 1;
+
+  const cellW = canvas.width / P, cellH = canvas.height / P;
+  const imgData = new ImageData(canvas.width, canvas.height);
+
+  for (let s1 = 0; s1 < P; s1++) {
+    for (let s2 = 0; s2 < P; s2++) {
+      const idx = s1 * P + s2;
+      const [r, g, bb] = domainColor(reRe[idx], reIm[idx], maxMag);
+      const x0 = Math.floor(s2 * cellW), y0 = Math.floor(s1 * cellH);
+      const x1 = Math.floor((s2 + 1) * cellW), y1 = Math.floor((s1 + 1) * cellH);
+      for (let py = y0; py < y1; py++) {
+        for (let px = x0; px < x1; px++) {
+          const pidx = (py * canvas.width + px) * 4;
+          imgData.data[pidx] = r; imgData.data[pidx+1] = g; imgData.data[pidx+2] = bb; imgData.data[pidx+3] = 255;
+        }
+      }
+    }
+  }
+  heatmapCache = imgData;
+
+  document.getElementById('heatmap-label').innerHTML =
+    `O<sub>${currentK}</sub>(a, b) domain-colored — axes = input phase (${currentK}a mod ${P}, ${currentK}b mod ${P})<br>` +
+    `Diagonals = constant output phase. Ideal: smooth rainbow along diagonals.`;
+}
+
+function drawHeatmap() {
+  const canvas = document.getElementById('heatmap-canvas');
+  const ctx = canvas.getContext('2d');
+
+  if (!heatmapCache) renderHeatmapImage();
+  ctx.putImageData(heatmapCache, 0, 0);
+
+  const cellW = canvas.width / P, cellH = canvas.height / P;
+
+  // Hover highlight
+  if (hoverK1 >= 0 && hoverK2 >= 0) {
+    const x0 = Math.floor(hoverK2 * cellW), y0 = Math.floor(hoverK1 * cellH);
+    const w = Math.floor((hoverK2 + 1) * cellW) - x0;
+    const h = Math.floor((hoverK1 + 1) * cellH) - y0;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(x0, y0, w, h);
+  }
+}
+
+// --- Contribution grid: per-neuron breakdown for selected target ---
+// For chosen freq k and target c, at each phase-space position (s1, s2):
+// sum over neurons j whose peak lands at that position of
+//   avg_act_j(over pairs with a+b=c) × ŵ_j(k)
+// This shows which neurons push the output and with what phase.
+
+let contribCache = null; // {re, im} Float64Arrays of length P*P, or null
+
+function computeContribGrid() {
+  if (selectedTarget < 0) { contribCache = null; return; }
+  const fd = getFreqData();
+  const k = currentK;
+  const k_inv = fd.k_inv;
+  const c = selectedTarget;
+
+  // Pairs with a+b ≡ c mod P
+  const pairs = [];
+  for (let a = 0; a < P; a++) {
+    const b = ((c - a) % P + P) % P;
+    pairs.push(a * P + b);
+  }
+
+  // For each neuron: find its peak in phase coords, compute avg contribution
+  const gridRe = new Float64Array(P * P);
+  const gridIm = new Float64Array(P * P);
+
+  for (const jStr of DATA.active_neurons) {
+    const j = Number(jStr);
+    const nj = fd.neurons[j];
+    // Only include neurons of the current dominant frequency
+    if (nj.dom !== k) continue;
+
+    const wRe = nj.re, wIm = nj.im;
+    const acts = DATA.activations[String(j)];
+
+    // Find peak (a,b) of this neuron
+    let bestIdx = 0, bestVal = acts[0];
+    for (let i = 1; i < acts.length; i++) {
+      if (acts[i] > bestVal) { bestVal = acts[i]; bestIdx = i; }
+    }
+    const peakA = Math.floor(bestIdx / P), peakB = bestIdx % P;
+
+    // Convert peak to phase coords
+    const s1 = phaseSlot(peakA, k);
+    const s2 = phaseSlot(peakB, k);
+
+    // Average activation over target pairs
+    let sumAct = 0;
+    for (const idx of pairs) sumAct += acts[idx];
+    const avgAct = sumAct / pairs.length;
+
+    // Contribution = avgAct × ŵ_j(k)
+    gridRe[s1 * P + s2] += avgAct * wRe;
+    gridIm[s1 * P + s2] += avgAct * wIm;
+  }
+
+  contribCache = { re: gridRe, im: gridIm };
+}
+
+let contribImgCache = null; // ImageData
+let contribLabelCache = '';
+
+function renderContribImage() {
+  const canvas = document.getElementById('contrib-canvas');
+  const cellW = canvas.width / P, cellH = canvas.height / P;
+
+  if (!contribCache || selectedTarget < 0) {
+    contribImgCache = null;
+    contribLabelCache = 'Hover a bar at right to see per-neuron contributions above';
+    return;
+  }
+
+  const { re, im } = contribCache;
+
+  let maxMag = 0;
+  for (let i = 0; i < P * P; i++) {
+    const m = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+    if (m > maxMag) maxMag = m;
+  }
+  if (maxMag === 0) maxMag = 1;
+
+  const imgData = new ImageData(canvas.width, canvas.height);
+
+  for (let s1 = 0; s1 < P; s1++) {
+    for (let s2 = 0; s2 < P; s2++) {
+      const idx = s1 * P + s2;
+      const [r, g, bb] = domainColor(re[idx], im[idx], maxMag);
+      const x0 = Math.floor(s2 * cellW), y0 = Math.floor(s1 * cellH);
+      const x1 = Math.floor((s2 + 1) * cellW), y1 = Math.floor((s1 + 1) * cellH);
+      for (let py = y0; py < y1; py++) {
+        for (let px = x0; px < x1; px++) {
+          const pidx = (py * canvas.width + px) * 4;
+          imgData.data[pidx] = r; imgData.data[pidx+1] = g; imgData.data[pidx+2] = bb; imgData.data[pidx+3] = 255;
+        }
+      }
+    }
+  }
+  contribImgCache = imgData;
+  contribLabelCache = `Neuron contributions (k=${currentK} only) for target c=${selectedTarget} — ` +
+    `peaks in phase space (${currentK}a, ${currentK}b) mod ${P}`;
+}
+
+function drawContribGrid() {
+  const canvas = document.getElementById('contrib-canvas');
+  const ctx = canvas.getContext('2d');
+
+  if (!contribImgCache) {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#444'; ctx.font = '13px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('Hover a bar at right', canvas.width / 2, canvas.height / 2 - 8);
+    ctx.fillText('to see neuron contributions', canvas.width / 2, canvas.height / 2 + 12);
+  } else {
+    ctx.putImageData(contribImgCache, 0, 0);
+  }
+  document.getElementById('contrib-label').textContent = contribLabelCache;
+}
+
+// --- Bar chart: output magnitude/phase per target residue c ---
+let barCanvasW = 0, barCanvasH = 0;
+let barCanvasInited = false;
+let barImgCache = null; // ImageData of the bar chart without highlight
+let barSlots = null;    // [{c, x, barTop, barW, barH}] for hit testing & highlight
+
+function initBarCanvas() {
+  if (barCanvasInited) return;
+  const canvas = document.getElementById('bar-canvas');
+  barCanvasW = canvas.clientWidth;
+  barCanvasH = canvas.clientHeight;
+  canvas.width = barCanvasW * devicePixelRatio;
+  canvas.height = barCanvasH * devicePixelRatio;
+  barCanvasInited = true;
+}
+
+function renderBarImage() {
+  initBarCanvas();
+  const canvas = document.getElementById('bar-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = barCanvasW, H = barCanvasH;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const margin = { top: 20, bottom: 25, left: 45, right: 10 };
+  const plotW = W - margin.left - margin.right, plotH = H - margin.top - margin.bottom;
+  const fd = getFreqData();
+  const k = currentK;
+
+  const sumRe = new Float64Array(P), sumIm = new Float64Array(P), count = new Float64Array(P);
+  for (let a = 0; a < P; a++) {
+    for (let b = 0; b < P; b++) {
+      const c = (a + b) % P;
+      const idx = a * P + b;
+      sumRe[c] += fd.O_re[idx];
+      sumIm[c] += fd.O_im[idx];
+      count[c]++;
+    }
+  }
+
+  const k_inv = fd.k_inv;
+  const barW = plotW / P;
+
+  let maxMag = 0;
+  for (let c = 0; c < P; c++) {
+    const m = Math.sqrt(sumRe[c] ** 2 + sumIm[c] ** 2) / count[c];
+    if (m > maxMag) maxMag = m;
+  }
+  if (maxMag === 0) maxMag = 1;
+
+  const clockR = Math.min(barW * 0.4, 6);
+  barSlots = [];
+
+  for (let s = 0; s < P; s++) {
+    const c = phaseSlotInv(s, k_inv);
+    const avgRe = sumRe[c] / count[c];
+    const avgIm = sumIm[c] / count[c];
+    const m = Math.sqrt(avgRe * avgRe + avgIm * avgIm);
+    const phase = Math.atan2(avgIm, avgRe);
+    const hue = ((phase / (2 * Math.PI)) + 1) % 1;
+    const [cr, cg, cb] = hslToRgb(hue, 0.85, 0.5);
+
+    const x = margin.left + s * barW;
+    const barH = (m / maxMag) * plotH;
+    const barTop = margin.top + plotH - barH;
+
+    barSlots.push({ c, x, barTop, barW, barH });
+
+    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+    ctx.fillRect(x + 1, barTop, barW - 2, barH);
+
+    if (m > maxMag * 0.05) {
+      const ccx = x + barW / 2, ccy = barTop - clockR - 2;
+      ctx.beginPath(); ctx.arc(ccx, ccy, clockR, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#666'; ctx.lineWidth = 0.7; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(ccx, ccy);
+      ctx.lineTo(ccx + clockR * Math.cos(phase), ccy - clockR * Math.sin(phase));
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+    }
+  }
+
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  for (let s = 0; s < P; s += 5) {
+    const c = phaseSlotInv(s, fd.k_inv);
+    ctx.fillText(c, margin.left + (s + 0.5) * barW, H - 4);
+  }
+  ctx.textAlign = 'right';
+  ctx.fillText(maxMag.toFixed(0), margin.left - 4, margin.top + 10);
+
+  document.getElementById('bar-title').textContent =
+    `One bar per target residue c (labels below), ordered by output phase. Height = avg |O_${k}|. All at freq k=${k}.`;
+
+  barImgCache = ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+function drawBarChart() {
+  initBarCanvas();
+  const canvas = document.getElementById('bar-canvas');
+  const ctx = canvas.getContext('2d');
+
+  if (!barImgCache) renderBarImage();
+  ctx.putImageData(barImgCache, 0, 0);
+
+  // Overlay highlight on selected target
+  if (selectedTarget >= 0 && barSlots) {
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    const slot = barSlots.find(s => s.c === selectedTarget);
+    if (slot) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.strokeRect(slot.x + 1, slot.barTop, slot.barW - 2, slot.barH);
+    }
+  }
+}
+
+// --- Phasor: neuron contributions for a specific target c ---
+function drawPhasor() {
+  const canvas = document.getElementById('phasor-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  if (selectedTarget < 0) {
+    ctx.fillStyle = '#555'; ctx.font = '13px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('Click a bar above to see', W / 2, H / 2 - 10);
+    ctx.fillText('neuron phasors for that target', W / 2, H / 2 + 10);
+    document.getElementById('phasor-title').textContent = 'Click a bar to see neuron phasors';
+    return;
+  }
+
+  const fd = getFreqData();
+  const k = currentK;
+  const c = selectedTarget;
+
+  // Collect all (a,b) pairs with a+b ≡ c mod P
+  const pairs = [];
+  for (let a = 0; a < P; a++) {
+    const b = ((c - a) % P + P) % P;
+    pairs.push(a * P + b);
+  }
+  const nPairs = pairs.length; // always P
+
+  // For each active neuron, compute average contribution to output freq k
+  // contribution_j = (1/nPairs) Σ_{(a,b):a+b=c} act_j(a,b) × ŵ_j(k)
+  const dots = [];
+  let maxMag = 0;
+  let totRe = 0, totIm = 0;
+
+  for (const jStr of DATA.active_neurons) {
+    const j = Number(jStr);
+    const nj = fd.neurons[j];
+    const wRe = nj.re, wIm = nj.im;
+
+    // Average activation over pairs
+    const acts = DATA.activations[String(j)];
+    let sumAct = 0;
+    for (const idx of pairs) sumAct += acts[idx];
+    const avgAct = sumAct / nPairs;
+
+    // contribution = avgAct × ŵ_j(k)
+    const cRe = avgAct * wRe;
+    const cIm = avgAct * wIm;
+    const cMag = Math.sqrt(cRe * cRe + cIm * cIm);
+
+    totRe += cRe;
+    totIm += cIm;
+
+    if (cMag > 0.01) {
+      dots.push({ j, cRe, cIm, cMag, dom: nj.dom, avgAct, wPhase: Math.atan2(wIm, wRe) });
+      if (cMag > maxMag) maxMag = cMag;
+    }
+  }
+  if (maxMag === 0) maxMag = 1;
+
+  dots.sort((a, b) => a.cMag - b.cMag);
+
+  const cx = W / 2, cy = H / 2;
+  // Scale so largest dot is near edge
+  const maxR = Math.min(W, H) / 2 - 30;
+  const scale = maxR / maxMag;
+
+  // Axes
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+  ctx.fillStyle = '#444'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('Re', W - 12, cy - 5);
+  ctx.fillText('Im', cx + 12, 12);
+
+  // Ideal output direction
+  const idealPhase = -2 * Math.PI * k * c / P;
+  ctx.strokeStyle = 'rgba(255,255,0,0.3)'; ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + maxR * Math.cos(idealPhase), cy - maxR * Math.sin(idealPhase));
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#666'; ctx.font = '9px monospace';
+  ctx.fillText('ideal', cx + (maxR + 10) * Math.cos(idealPhase),
+                         cy - (maxR + 10) * Math.sin(idealPhase));
+
+  // Frequency colors
+  const FREQ_COLORS = { 1: '#e94560', 9: '#3b82f6', 14: '#22c55e' };
+
+  // Draw dots
+  for (const d of dots) {
+    const px = cx + d.cRe * scale;
+    const py = cy - d.cIm * scale;
+    const r = 2 + 4 * Math.sqrt(d.cMag / maxMag);
+    ctx.beginPath(); ctx.arc(px, py, r, 0, 2 * Math.PI);
+    ctx.fillStyle = FREQ_COLORS[d.dom] || '#888';
+    ctx.globalAlpha = 0.6;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Sum vector
+  const sumPx = cx + totRe * scale;
+  const sumPy = cy - totIm * scale;
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(sumPx, sumPy);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.stroke();
+  // Arrowhead
+  const angle = Math.atan2(cy - sumPy, sumPx - cx);
+  ctx.beginPath();
+  ctx.moveTo(sumPx, sumPy);
+  ctx.lineTo(sumPx - 10 * Math.cos(angle - 0.3), sumPy + 10 * Math.sin(angle - 0.3));
+  ctx.moveTo(sumPx, sumPy);
+  ctx.lineTo(sumPx - 10 * Math.cos(angle + 0.3), sumPy + 10 * Math.sin(angle + 0.3));
+  ctx.stroke();
+
+  // Sum label
+  const totMag = Math.sqrt(totRe * totRe + totIm * totIm);
+  const totPhase = Math.atan2(totIm, totRe) * 180 / Math.PI;
+  const idealDeg = (idealPhase * 180 / Math.PI) % 360;
+  ctx.fillStyle = '#ccc'; ctx.font = '12px monospace'; ctx.textAlign = 'left';
+  ctx.fillText(`Σ = ${totMag.toFixed(1)} ∠${totPhase.toFixed(0)}°`, 10, H - 30);
+  ctx.fillStyle = '#888';
+  ctx.fillText(`ideal ∠${idealDeg.toFixed(0)}°`, 10, H - 14);
+
+  // Legend
+  let ly = 16;
+  ctx.font = '11px monospace'; ctx.textAlign = 'left';
+  for (const [kk, col] of [[1, '#e94560'], [9, '#3b82f6'], [14, '#22c55e']]) {
+    ctx.fillStyle = col;
+    ctx.fillRect(W - 60, ly - 8, 10, 10);
+    ctx.fillStyle = '#888';
+    ctx.fillText(`k=${kk}`, W - 46, ly);
+    ly += 16;
+  }
+
+  document.getElementById('phasor-title').textContent =
+    `Target residue c=${c} (a+b≡${c}): ${dots.length} neurons at freq k=${k} — dashed = ideal phase ${idealDeg.toFixed(0)}°`;
+}
+
+// --- Bar chart click → select target ---
+function barSlotFromEvent(e) {
+  const canvas = document.getElementById('bar-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const W = barCanvasW;
+  const mx = (e.clientX - rect.left) / rect.width * W;
+  const margin_left = 45, margin_right = 10;
+  const plotW = W - margin_left - margin_right;
+  const s = Math.floor((mx - margin_left) / plotW * P);
+  return (s >= 0 && s < P) ? s : -1;
+}
+
+function updateRightPanels() {
+  computeContribGrid();
+  renderContribImage();
+  drawBarChart();  // just putImageData + highlight overlay
+  drawContribGrid();
+  drawPhasor();
+}
+
+function handleBarClick(e) {
+  const s = barSlotFromEvent(e);
+  if (s >= 0) {
+    const fd = getFreqData();
+    selectedTarget = phaseSlotInv(s, fd.k_inv);
+    updateRightPanels();
+  }
+}
+
+function handleBarHover(e) {
+  const s = barSlotFromEvent(e);
+  if (s >= 0) {
+    const fd = getFreqData();
+    const c = phaseSlotInv(s, fd.k_inv);
+    if (c !== selectedTarget) {
+      selectedTarget = c;
+      updateRightPanels();
+    }
+  }
+}
+
+// --- Heatmap hover ---
+function updateHover(e) {
+  const canvas = document.getElementById('heatmap-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const cellW = canvas.width / P, cellH = canvas.height / P;
+  const mx = (e.clientX - rect.left) * canvas.width / rect.width;
+  const my = (e.clientY - rect.top) * canvas.height / rect.height;
+  const newK2 = Math.floor(mx / cellW);
+  const newK1 = Math.floor(my / cellH);
+  if (newK1 >= 0 && newK1 < P && newK2 >= 0 && newK2 < P && (newK1 !== hoverK1 || newK2 !== hoverK2)) {
+    hoverK1 = newK1; hoverK2 = newK2;
+    const fd = getFreqData();
+    const a = phaseSlotInv(hoverK1, fd.k_inv);
+    const b = phaseSlotInv(hoverK2, fd.k_inv);
+    const idx = a * P + b;
+    const re = fd.O_re[idx], im = fd.O_im[idx];
+    const m = Math.sqrt(re * re + im * im);
+    const phase = Math.atan2(im, re) * 180 / Math.PI;
+    const target = (a + b) % P;
+    const idealPhase = ((-360 * currentK * target / P) % 360 + 360) % 360;
+    document.getElementById('hover-info').textContent =
+      `phase(a)=${hoverK1}, phase(b)=${hoverK2} → a=${a}, b=${b}, target=${target} | ` +
+      `O = ${m.toFixed(1)} ∠${phase.toFixed(0)}° (ideal ∠${idealPhase.toFixed(0)}°)`;
+    drawHeatmap(); // only redraw heatmap, not the right panels
+  }
+}
+
+function onLeave() {
+  hoverK1 = -1; hoverK2 = -1;
+  document.getElementById('hover-info').innerHTML = '&nbsp;';
+  drawHeatmap();
+}
+
+function draw() {
+  renderHeatmapImage();
+  renderBarImage();
+  computeContribGrid();
+  renderContribImage();
+  drawHeatmap();
+  drawBarChart();
+  drawContribGrid();
+  drawPhasor();
+}
+
+fetch('phase_data.json')
+  .then(r => r.json())
+  .then(data => {
+    DATA = data;
+    document.getElementById('heatmap-canvas').addEventListener('mousemove', updateHover);
+    document.getElementById('heatmap-canvas').addEventListener('mouseleave', onLeave);
+    document.getElementById('bar-canvas').addEventListener('click', handleBarClick);
+    document.getElementById('bar-canvas').addEventListener('mousemove', handleBarHover);
+    document.querySelectorAll('.freq-btn').forEach(b => b.addEventListener('click', () => {
+      currentK = Number(b.dataset.k);
+      selectedTarget = -1;
+      document.querySelectorAll('.freq-btn').forEach(x => x.classList.toggle('active', x.dataset.k === b.dataset.k));
+      b.blur();
+      draw();
+    }));
+    draw();
+  });
+</script>
+</body>
+</html>

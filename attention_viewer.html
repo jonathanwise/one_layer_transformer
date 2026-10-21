@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Attention Viewer</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+#top-bar { padding: 10px 20px; background: #16213e; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+#top-bar h1 { font-size: 16px; font-weight: 600; color: #ccc; }
+.lbl { color: #777; font-size: 11px; }
+.grp { display: flex; gap: 4px; align-items: center; }
+.tbtn { background: #0f3460; color: #888; border: 1px solid #444; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 12px; }
+.tbtn:hover { background: #1a5276; }
+.tbtn.active { background: #e94560; color: #fff; border-color: #e94560; }
+#feat { color: #e94560; font-weight: bold; min-width: 70px; text-align: center; }
+input[type=number] { width: 56px; background: #0f3460; color: #e0e0e0; border: 1px solid #444; border-radius: 3px; font-family: inherit; font-size: 12px; padding: 2px 4px; }
+#main { padding: 15px 20px; display: flex; flex-direction: column; gap: 16px; }
+#panels { display: flex; gap: 14px; flex-wrap: wrap; }
+.panel { display: flex; flex-direction: column; gap: 4px; width: 215px; }
+.panel .pt { color: #aaa; font-size: 12px; min-height: 16px; }
+.panel canvas.grid { border: 1px solid #333; image-rendering: pixelated; cursor: crosshair; display: block; }
+.panel .ps { color: #999; font-size: 11px; min-height: 30px; }
+.panel canvas.attn { display: block; }
+#overview-box h2, #hover-box h2 { font-size: 12px; color: #aaa; margin-bottom: 4px; }
+#overview { border: 1px solid #333; display: block; cursor: crosshair; image-rendering: pixelated; }
+#hover-info { color: #aaa; font-size: 12px; min-height: 18px; }
+#legend { color: #777; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="top-bar">
+  <h1>Attention heads</h1>
+  <div class="grp"><span class="lbl">query position</span>
+    <button class="tbtn pos-btn" data-pos="0">0 (token a)</button>
+    <button class="tbtn pos-btn" data-pos="1">1 (token b)</button>
+    <button class="tbtn pos-btn active" data-pos="2">2 (answer slot)</button>
+  </div>
+  <div class="grp"><span class="lbl">feature d</span>
+    <button class="tbtn" id="prev-btn">←</button><span id="feat">d = 0</span><button class="tbtn" id="next-btn">→</button>
+    <input type="number" id="feat-input" min="0" max="127" value="0">
+  </div>
+  <div class="grp"><span class="lbl">view</span>
+    <button class="tbtn view-btn active" data-view="values">values</button>
+    <button class="tbtn view-btn" data-view="dft">|2-D DFT|</button>
+    <label class="lbl" id="dc-lbl" style="display:none"><input type="checkbox" id="dc-chk" checked> hide DC</label>
+  </div>
+  <button class="tbtn" id="scale-btn" title="one colour scale for all five panels">shared scale</button>
+  <span id="info" style="color:#e94560"></span>
+</div>
+<div id="timeline"></div>
+<div id="main">
+  <div id="panels"></div>
+  <div id="hover-box"><div id="hover-info">&nbsp;</div></div>
+  <div id="overview-box">
+    <h2 id="overview-title">Feature overview: how much each head's output varies over the 43×43 inputs, per feature d (columns) — hover to select d</h2>
+    <canvas id="overview" width="1024" height="100"></canvas>
+    <div id="legend">rows: head 0 · head 1 · head 2 · head 3 · stream out (x1 = x0 + Σ heads) · brightness = std of the grid for that feature, normalised per row. Below the stream row: fraction of its variance explained by a alone (red) vs b alone (blue).</div>
+  </div>
+</div>
+
+<script src="timeline.js?v=5"></script>
+<script>
+const P = 43, D = 128, H = 4, NP = 5;
+const CELL = 5, GW = P * CELL;                  // 215 px grids
+const NAMES = ['head 0', 'head 1', 'head 2', 'head 3', 'stream out (x0 + Σ heads)'];
+let DATA = null, pos = 2, feat = 0, view = 'values', hideDC = true, shared = false;
+let hover = { p: -1, a: -1, b: -1 };
+let overview = null;                             // {std: NP x D, fa: D, fb: D}
+const K = () => Timeline.K;
+
+// ---- 2-D DFT (separable) ----
+const TWC = new Float64Array(P * P), TWS = new Float64Array(P * P);
+for (let k = 0; k < P; k++) for (let n = 0; n < P; n++) { const t = -2 * Math.PI * k * n / P; TWC[k * P + n] = Math.cos(t); TWS[k * P + n] = Math.sin(t); }
+function dft2d(g) {                              // g[a*P+b] real → {re, im, mag}[k1*P+k2]
+  const r1 = new Float64Array(P * P), i1 = new Float64Array(P * P);
+  for (let a = 0; a < P; a++) for (let k2 = 0; k2 < P; k2++) { let sr = 0, si = 0; for (let b = 0; b < P; b++) { const v = g[a * P + b]; sr += v * TWC[k2 * P + b]; si += v * TWS[k2 * P + b]; } r1[a * P + k2] = sr; i1[a * P + k2] = si; }
+  const re = new Float64Array(P * P), im = new Float64Array(P * P), mag = new Float64Array(P * P);
+  for (let k1 = 0; k1 < P; k1++) for (let k2 = 0; k2 < P; k2++) {
+    let sr = 0, si = 0;
+    for (let a = 0; a < P; a++) { const c = TWC[k1 * P + a], s = TWS[k1 * P + a], xr = r1[a * P + k2], xi = i1[a * P + k2]; sr += xr * c - xi * s; si += xr * s + xi * c; }
+    re[k1 * P + k2] = sr; im[k1 * P + k2] = si; mag[k1 * P + k2] = Math.hypot(sr, si);
+  }
+  return { re, im, mag };
+}
+function hslToRgb(h, s, l) {
+  const f = n => { const k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l); return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); };
+  return [f(0), f(8), f(4)];
+}
+function domainColor(re, im, vmax) { const m = Math.hypot(re, im), hue = ((Math.atan2(im, re) / (2 * Math.PI)) + 1) % 1; return hslToRgb(hue, 1, 0.5 * Math.min(1, vmax > 0 ? m / vmax : 0)); }
+function divColor(v, vmax) {
+  const t = Math.max(-1, Math.min(1, v / (vmax || 1)));
+  if (t >= 0) return [Math.round(20 + 225 * t), Math.round(20 + 50 * t), Math.round(40 + 40 * t)];
+  return [Math.round(20 + 30 * -t), Math.round(20 + 110 * -t), Math.round(40 + 215 * -t)];
+}
+
+// ---- data access ----
+function gridOf(p, d) {                          // panel p (0..3 heads, 4 stream), feature d → Float32Array(P*P)
+  const src = p < H ? DATA.heads[p] : DATA.stream, g = new Float32Array(P * P);
+  for (let i = 0; i < P * P; i++) g[i] = src[i * D + d];
+  return g;
+}
+function computeOverview() {
+  const std = new Float32Array(NP * D), fa = new Float32Array(D), fb = new Float32Array(D);
+  for (let p = 0; p < NP; p++) {
+    const src = p < H ? DATA.heads[p] : DATA.stream;
+    for (let d = 0; d < D; d++) {
+      let s = 0, s2 = 0; const ra = new Float64Array(P), rb = new Float64Array(P);
+      for (let a = 0; a < P; a++) for (let b = 0; b < P; b++) { const v = src[(a * P + b) * D + d]; s += v; s2 += v * v; ra[a] += v; rb[b] += v; }
+      const mean = s / (P * P), varT = s2 / (P * P) - mean * mean;
+      std[p * D + d] = Math.sqrt(Math.max(varT, 0));
+      if (p === NP - 1) {                        // variance explained by the row means (a alone) and column means (b alone)
+        let va = 0, vb = 0; for (let a = 0; a < P; a++) { va += (ra[a] / P - mean) ** 2; vb += (rb[a] / P - mean) ** 2; }
+        fa[d] = varT > 0 ? va / P / varT : 0; fb[d] = varT > 0 ? vb / P / varT : 0;
+      }
+    }
+  }
+  overview = { std, fa, fb };
+}
+
+// ---- panels ----
+function build() {
+  const box = document.getElementById('panels'); box.innerHTML = '';
+  for (let p = 0; p < NP; p++) {
+    const div = document.createElement('div'); div.className = 'panel';
+    div.innerHTML = `<div class="pt" id="pt${p}">${NAMES[p]}</div><canvas class="grid" id="g${p}" width="${GW}" height="${GW}"></canvas><div class="ps" id="ps${p}"></div>` +
+      (p < H ? `<canvas class="attn" id="at${p}" width="${GW}" height="26"></canvas>` : '');
+    box.appendChild(div);
+    const c = document.getElementById('g' + p);
+    c.addEventListener('mousemove', e => { const r = c.getBoundingClientRect(); const b = Math.floor((e.clientX - r.left) / r.width * P), a = Math.floor((e.clientY - r.top) / r.height * P); if (a < 0 || b < 0 || a >= P || b >= P) return; if (hover.p !== p || hover.a !== a || hover.b !== b) { hover = { p, a, b }; draw(); } });
+    c.addEventListener('mouseleave', () => { hover = { p: -1, a: -1, b: -1 }; draw(); });
+  }
+}
+
+function draw() {
+  if (!DATA) return;
+  const grids = [], dfts = [];
+  for (let p = 0; p < NP; p++) { grids.push(gridOf(p, feat)); if (view === 'dft') dfts.push(dft2d(grids[p])); }
+  const vmaxOf = p => {
+    let m = 0;
+    if (view === 'dft') { const mg = dfts[p].mag; for (let i = 0; i < P * P; i++) if (!(hideDC && i === 0) && mg[i] > m) m = mg[i]; }
+    else { const g = grids[p]; for (let i = 0; i < P * P; i++) if (Math.abs(g[i]) > m) m = Math.abs(g[i]); }
+    return m;
+  };
+  const vm = Array.from({ length: NP }, (_, p) => vmaxOf(p)), vshared = Math.max(...vm);
+  for (let p = 0; p < NP; p++) {
+    const c = document.getElementById('g' + p), ctx = c.getContext('2d'), img = ctx.createImageData(GW, GW);
+    const vmax = shared ? vshared : vm[p], g = grids[p], f = dfts[p];
+    let peak = 0, peakV = -1;
+    for (let a = 0; a < P; a++) for (let b = 0; b < P; b++) {
+      const i = a * P + b;
+      let rgb;
+      if (view === 'dft') { rgb = (hideDC && i === 0) ? [40, 40, 40] : domainColor(f.re[i], f.im[i], vmax); if (!(hideDC && i === 0) && f.mag[i] > peakV) { peakV = f.mag[i]; peak = i; } }
+      else { rgb = divColor(g[i], vmax); if (Math.abs(g[i]) > peakV) { peakV = Math.abs(g[i]); peak = i; } }
+      for (let y = a * CELL; y < (a + 1) * CELL; y++) for (let x = b * CELL; x < (b + 1) * CELL; x++) { const o = (y * GW + x) * 4; img.data[o] = rgb[0]; img.data[o + 1] = rgb[1]; img.data[o + 2] = rgb[2]; img.data[o + 3] = 255; }
+    }
+    ctx.putImageData(img, 0, 0);
+    if (hover.a >= 0) { ctx.strokeStyle = hover.p === p ? '#fff' : 'rgba(255,255,255,0.45)'; ctx.lineWidth = 1; ctx.strokeRect(hover.b * CELL + 0.5, hover.a * CELL + 0.5, CELL - 1, CELL - 1); }
+    const pa = Math.floor(peak / P), pb = peak % P;
+    document.getElementById('pt' + p).textContent = NAMES[p] + (view === 'dft' ? ` · peak (k₁=${pa}, k₂=${pb})` : '');
+    const ps = document.getElementById('ps' + p);
+    if (view === 'dft') ps.textContent = `|F| max ${peakV.toFixed(1)} · scale ${vmax.toFixed(1)}` + (p < H ? '' : '');
+    else ps.textContent = `range ±${vm[p].toFixed(3)} · scale ±${vmax.toFixed(3)}` + (overview ? ` · std ${overview.std[p * D + feat].toFixed(3)}` : '');
+    if (p < H) drawAttn(p);
+  }
+  if (overview && NP - 1 >= 0) document.getElementById('ps' + (NP - 1)).textContent += ` · variance from a alone ${(100 * overview.fa[feat]).toFixed(0)}%, b alone ${(100 * overview.fb[feat]).toFixed(0)}%`;
+  // hover readout
+  const hi = document.getElementById('hover-info');
+  if (hover.a >= 0) {
+    const vals = grids.map((g, p) => `${NAMES[p].split(' (')[0]}: ${(view === 'dft' ? dfts[p].mag[hover.a * P + hover.b] : g[hover.a * P + hover.b]).toFixed(3)}`);
+    hi.textContent = (view === 'dft' ? `(k₁=${hover.a}, k₂=${hover.b})  |F| ` : `(a=${hover.a}, b=${hover.b})  `) + vals.join(' · ');
+  } else hi.innerHTML = '&nbsp;';
+  drawOverview();
+  document.getElementById('feat').textContent = `d = ${feat}`;
+  document.getElementById('feat-input').value = feat;
+}
+
+function drawAttn(h) {                           // mean attention weight of head h to (pos 0 = a, pos 1 = b, pos 2 = ?) over all inputs
+  const c = document.getElementById('at' + h), ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  const m = [0, 0, 0], lo = [1, 1, 1], hi = [0, 0, 0];
+  for (let i = 0; i < P * P; i++) for (let p = 0; p < 3; p++) { const v = DATA.attn[(i * H + h) * 3 + p]; m[p] += v; lo[p] = Math.min(lo[p], v); hi[p] = Math.max(hi[p], v); }
+  const cols = ['#e94560', '#3b82f6', '#888'], lab = ['a', 'b', '?'];
+  let x = 0; ctx.font = '10px monospace'; ctx.textBaseline = 'middle';
+  for (let p = 0; p < 3; p++) { const w = GW * m[p] / (P * P); ctx.fillStyle = cols[p]; ctx.fillRect(x, 2, w, 12); x += w; }
+  ctx.fillStyle = '#aaa'; ctx.textAlign = 'left';
+  ctx.fillText('attends to: ' + lab.map((l, p) => `${l} ${(100 * m[p] / (P * P)).toFixed(0)}% [${(100 * lo[p]).toFixed(0)}–${(100 * hi[p]).toFixed(0)}]`).join('  '), 0, 21);
+}
+
+function drawOverview() {
+  const c = document.getElementById('overview'), ctx = c.getContext('2d'), W = c.width, cw = W / D, rh = 16;
+  ctx.clearRect(0, 0, W, c.height);
+  if (!overview) return;
+  for (let p = 0; p < NP; p++) {
+    let mx = 0; for (let d = 0; d < D; d++) mx = Math.max(mx, overview.std[p * D + d]);
+    for (let d = 0; d < D; d++) { const t = Math.sqrt(overview.std[p * D + d] / (mx || 1)); ctx.fillStyle = p < H ? `rgb(${Math.round(18 + 210 * t)},${Math.round(18 + 160 * t)},${Math.round(40 + 60 * t)})` : `rgb(${Math.round(18 + 200 * t)},${Math.round(18 + 200 * t)},${Math.round(40 + 200 * t)})`; ctx.fillRect(d * cw, p * rh, Math.ceil(cw) - 1, rh - 1); }
+  }
+  for (let d = 0; d < D; d++) { const y0 = NP * rh + 2; ctx.fillStyle = '#e94560'; ctx.fillRect(d * cw, y0, Math.ceil(cw) - 1, 8 * overview.fa[d]); ctx.fillStyle = '#3b82f6'; ctx.fillRect(d * cw, y0 + 9, Math.ceil(cw) - 1, 8 * overview.fb[d]); }
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(feat * cw + 0.5, 0.5, Math.ceil(cw) - 1, c.height - 1);
+  ctx.fillStyle = '#ccc'; ctx.font = '10px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  for (let p = 0; p < NP; p++) ctx.fillText(p < H ? 'h' + p : 'x1', 2, p * rh + rh / 2);
+}
+
+function setFeat(d) { feat = ((Math.round(d) % D) + D) % D; draw(); }
+function setPos(p) {
+  pos = p;
+  document.querySelectorAll('.pos-btn').forEach(b => b.classList.toggle('active', +b.dataset.pos === pos));
+  DATA = null; overview = null; Timeline.refresh();
+}
+document.querySelectorAll('.pos-btn').forEach(b => b.addEventListener('click', () => setPos(+b.dataset.pos)));
+document.querySelectorAll('.view-btn').forEach(b => b.addEventListener('click', () => { view = b.dataset.view; document.querySelectorAll('.view-btn').forEach(x => x.classList.toggle('active', x === b)); document.getElementById('dc-lbl').style.display = view === 'dft' ? '' : 'none'; draw(); }));
+document.getElementById('dc-chk').addEventListener('change', e => { hideDC = e.target.checked; draw(); });
+document.getElementById('scale-btn').addEventListener('click', e => { shared = !shared; e.target.classList.toggle('active', shared); draw(); });
+document.getElementById('prev-btn').addEventListener('click', () => setFeat(feat - 1));
+document.getElementById('next-btn').addEventListener('click', () => setFeat(feat + 1));
+document.getElementById('feat-input').addEventListener('change', e => setFeat(+e.target.value));
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowLeft') { setFeat(feat - 1); e.preventDefault(); }
+  if (e.key === 'ArrowRight') { setFeat(feat + 1); e.preventDefault(); }
+});
+{
+  const ov = document.getElementById('overview');
+  ov.addEventListener('mousemove', e => { const r = ov.getBoundingClientRect(); const d = Math.floor((e.clientX - r.left) / r.width * D); if (d >= 0 && d < D && d !== feat) setFeat(d); });
+}
+
+Timeline.init({
+  container: '#timeline', get modes() { return ['attn' + pos]; },
+  onIndex: index => { build(); document.getElementById('overview-title').textContent += ` · freqs ${index.K.join(', ')}`; },
+  onData: (step, mode, data) => { if (mode !== 'attn' + pos) return; DATA = data; computeOverview(); document.getElementById('info').textContent = `step ${step} · query position ${pos}`; draw(); },
+});
+</script>
+</body>
+</html>

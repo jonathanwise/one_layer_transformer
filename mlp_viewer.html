@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MLP Viewer</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+#top-bar { padding: 10px 20px; background: #16213e; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+#top-bar h1 { font-size: 16px; font-weight: 600; color: #ccc; }
+.lbl { color: #777; font-size: 11px; }
+.grp { display: flex; gap: 4px; align-items: center; }
+.tbtn { background: #0f3460; color: #888; border: 1px solid #444; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 12px; }
+.tbtn:hover { background: #1a5276; }
+.tbtn.active { background: #e94560; color: #fff; border-color: #e94560; }
+#main { padding: 15px 20px; display: flex; gap: 18px; align-items: flex-start; }
+#net { border: 1px solid #333; display: block; cursor: crosshair; background: #12122a; }
+#side { display: flex; flex-direction: column; gap: 10px; width: 420px; }
+.box { background: #16213e; border: 1px solid #333; border-radius: 5px; padding: 10px; }
+.box h2 { font-size: 12px; color: #aaa; margin-bottom: 6px; min-height: 16px; }
+.box p { color: #999; font-size: 11px; line-height: 1.5; }
+#grids { display: flex; gap: 10px; flex-wrap: wrap; }
+.g { display: flex; flex-direction: column; gap: 3px; }
+.g canvas { border: 1px solid #333; image-rendering: pixelated; display: block; cursor: crosshair; }
+.g .cap { font-size: 11px; color: #999; text-align: center; min-height: 14px; }
+#legend { color: #777; font-size: 11px; line-height: 1.5; }
+#cell { color: #aaa; font-size: 11px; min-height: 16px; }
+</style>
+</head>
+<body>
+<div id="top-bar">
+  <h1>The MLP as a whole</h1>
+  <span class="lbl" id="hint">128 stream dims → 512 ReLU neurons → 128 output dims · hover a dot (click to pin, ↑↓ move, Esc unpin)</span>
+  <div class="grp"><span class="lbl">dot picture</span>
+    <button class="tbtn view-btn active" data-view="values">values on (a, b)</button>
+    <button class="tbtn view-btn" data-view="dft">|2-D DFT|</button>
+    <label class="lbl" id="dc-lbl" style="display:none"><input type="checkbox" id="dc-chk" checked> hide DC</label>
+  </div>
+  <div class="grp"><span class="lbl">lines</span>
+    <button class="tbtn lines-btn active" data-lines="hover">of hovered dot</button>
+    <button class="tbtn lines-btn" data-lines="top">strongest overall</button>
+    <button class="tbtn lines-btn" data-lines="none">none</button>
+  </div>
+  <div class="grp"><span class="lbl">dot colour</span>
+    <button class="tbtn col-btn active" data-col="freq">dominant frequency</button>
+    <button class="tbtn col-btn" data-col="activity">activity</button>
+  </div>
+  <span id="info" style="color:#e94560"></span>
+</div>
+<div id="timeline"></div>
+<div id="main">
+  <canvas id="net" width="760" height="860"></canvas>
+  <div id="side">
+    <div class="box">
+      <h2 id="unit-title">hover a dot</h2>
+      <div id="grids"></div>
+      <div id="cell">&nbsp;</div>
+    </div>
+    <div class="box"><h2>Reading the picture</h2><p id="legend"></p></div>
+  </div>
+</div>
+
+<script src="timeline.js?v=5"></script>
+<script>
+const P = 43, D = 128, DM = 512, N = P * P;
+const PALETTE = ['#e94560', '#3b82f6', '#22c55e', '#ffb347', '#c084fc', '#2dd4bf'];
+let DATA = null, K = [], view = 'values', hideDC = true, lines = 'hover', colMode = 'freq';
+let hover = null, pinned = null;          // {col: 0|1|2, u: index}
+let cellHover = null;                      // {a, b} inside a detail grid
+const GCELL = 4, GW = P * GCELL;           // 172 px detail grids
+
+// ---- layout of the three columns ----
+const X = { in: 60, hid: [300, 340, 380, 420], out: 700 }, TOP = 24, BOT = 836;
+const RS = (BOT - TOP) / (D - 1);          // row spacing (128 rows in every column; hidden = 4 sub-columns of 128)
+function posOf(col, u) { if (col === 0) return [X.in, TOP + u * RS]; if (col === 2) return [X.out, TOP + u * RS]; return [X.hid[Math.floor(u / D)], TOP + (u % D) * RS]; }
+function unitAt(x, y) {
+  const row = Math.round((y - TOP) / RS); if (row < 0 || row >= D) return null;
+  if (Math.abs(x - X.in) < 14) return { col: 0, u: row };
+  if (Math.abs(x - X.out) < 14) return { col: 2, u: row };
+  for (let s = 0; s < 4; s++) if (Math.abs(x - X.hid[s]) < 14) return { col: 1, u: s * D + row };
+  return null;
+}
+const statsOf = col => col === 0 ? DATA.statsIn : col === 1 ? DATA.statsHid : DATA.statsOut;
+const hex2rgb = h => h.match(/\w\w/g).map(x => parseInt(x, 16));
+function freqRGB(k) { const i = K.indexOf(k); return i < 0 ? [170, 170, 170] : hex2rgb(PALETTE[i % PALETTE.length]); }
+
+// ---- 2-D DFT (separable) ----
+const TWC = new Float64Array(P * P), TWS = new Float64Array(P * P);
+for (let k = 0; k < P; k++) for (let n = 0; n < P; n++) { const t = -2 * Math.PI * k * n / P; TWC[k * P + n] = Math.cos(t); TWS[k * P + n] = Math.sin(t); }
+function dft2d(g) {
+  const r1 = new Float64Array(P * P), i1 = new Float64Array(P * P);
+  for (let a = 0; a < P; a++) for (let k2 = 0; k2 < P; k2++) { let sr = 0, si = 0; for (let b = 0; b < P; b++) { const v = g[a * P + b]; sr += v * TWC[k2 * P + b]; si += v * TWS[k2 * P + b]; } r1[a * P + k2] = sr; i1[a * P + k2] = si; }
+  const re = new Float64Array(P * P), im = new Float64Array(P * P), mag = new Float64Array(P * P);
+  for (let k1 = 0; k1 < P; k1++) for (let k2 = 0; k2 < P; k2++) {
+    let sr = 0, si = 0;
+    for (let a = 0; a < P; a++) { const c = TWC[k1 * P + a], s = TWS[k1 * P + a], xr = r1[a * P + k2], xi = i1[a * P + k2]; sr += xr * c - xi * s; si += xr * s + xi * c; }
+    re[k1 * P + k2] = sr; im[k1 * P + k2] = si; mag[k1 * P + k2] = Math.hypot(sr, si);
+  }
+  return { re, im, mag };
+}
+function hslToRgb(h, s, l) { const f = n => { const k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l); return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); }; return [f(0), f(8), f(4)]; }
+function domainColor(re, im, vmax) { const m = Math.hypot(re, im), hue = ((Math.atan2(im, re) / (2 * Math.PI)) + 1) % 1; return hslToRgb(hue, 1, 0.5 * Math.min(1, vmax > 0 ? m / vmax : 0)); }
+function divColor(v, vmax) { const t = Math.max(-1, Math.min(1, v / (vmax || 1))); return t >= 0 ? [Math.round(20 + 225 * t), Math.round(20 + 50 * t), Math.round(40 + 40 * t)] : [Math.round(20 + 30 * -t), Math.round(20 + 110 * -t), Math.round(40 + 215 * -t)]; }
+function seqColor(t) { t = Math.max(0, Math.min(1, t)); return [Math.round(15 + 240 * t), Math.round(15 + 200 * t * t), Math.round(40 + 60 * (1 - t))]; }
+
+// ---- grids of a unit ----
+function gridOf(src, width, u) { const g = new Float32Array(N); for (let i = 0; i < N; i++) g[i] = src[i * width + u]; return g; }
+function gridsOf(sel) {
+  if (sel.col === 0) return [{ name: `stream dim ${sel.u} (input x₁)`, g: gridOf(DATA.x1, D, sel.u), signed: true }];
+  if (sel.col === 2) return [{ name: `MLP output dim ${sel.u} (hid·W_o + b_o)`, g: gridOf(DATA.out, D, sel.u), signed: true }];
+  return [{ name: `neuron ${sel.u}: pre-ReLU`, g: gridOf(DATA.pre, DM, sel.u), signed: true }, { name: `neuron ${sel.u}: post-ReLU`, g: gridOf(DATA.hid, DM, sel.u), signed: false }];
+}
+
+// ---- top-N strongest weights (for the "strongest overall" line mode) ----
+let topLines = null;
+function computeTopLines() {
+  const L = [];
+  for (let d = 0; d < D; d++) for (let j = 0; j < DM; j++) L.push([Math.abs(DATA.W_i[d * DM + j]), 0, d, j, DATA.W_i[d * DM + j]]);
+  for (let j = 0; j < DM; j++) for (let d = 0; d < D; d++) L.push([Math.abs(DATA.W_o[j * D + d]), 1, j, d, DATA.W_o[j * D + d]]);
+  L.sort((p, q) => q[0] - p[0]);
+  topLines = L.slice(0, 1500);
+}
+
+// ---- drawing ----
+function drawNet() {
+  const c = document.getElementById('net'), ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  const sel = pinned || hover;
+  // column headers
+  ctx.fillStyle = '#888'; ctx.font = '11px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('x₁ (128)', X.in, 12); ctx.fillText('512 ReLU neurons (4 sub-columns of 128, index = column·128 + row)', (X.hid[0] + X.hid[3]) / 2, 12); ctx.fillText('MLP out (128)', X.out, 12);
+  ctx.fillText('W_i', (X.in + X.hid[0]) / 2, 12); ctx.fillText('W_o', (X.hid[3] + X.out) / 2, 12);
+  // lines
+  let wmaxI = 0, wmaxO = 0;
+  for (let i = 0; i < D * DM; i++) { wmaxI = Math.max(wmaxI, Math.abs(DATA.W_i[i])); wmaxO = Math.max(wmaxO, Math.abs(DATA.W_o[i])); }
+  const line = (x0, y0, x1, y1, w, wmax, strong) => {
+    const t = Math.abs(w) / wmax; if (t < 0.04) return;
+    ctx.strokeStyle = w > 0 ? `rgba(233,69,96,${strong ? 0.15 + 0.85 * t : 0.08 + 0.5 * t})` : `rgba(59,130,246,${strong ? 0.15 + 0.85 * t : 0.08 + 0.5 * t})`;
+    ctx.lineWidth = 0.4 + 2.2 * t; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  };
+  if (lines === 'top') {
+    if (!topLines) computeTopLines();
+    for (const [, kind, u, v, w] of topLines) {
+      if (kind === 0) { const [x0, y0] = posOf(0, u), [x1, y1] = posOf(1, v); line(x0, y0, x1, y1, w, wmaxI, false); }
+      else { const [x0, y0] = posOf(1, u), [x1, y1] = posOf(2, v); line(x0, y0, x1, y1, w, wmaxO, false); }
+    }
+  }
+  if (lines === 'hover' && sel) {
+    if (sel.col === 0) { const [x0, y0] = posOf(0, sel.u); for (let j = 0; j < DM; j++) { const [x1, y1] = posOf(1, j); line(x0, y0, x1, y1, DATA.W_i[sel.u * DM + j], wmaxI, true); } }
+    if (sel.col === 2) { const [x1, y1] = posOf(2, sel.u); for (let j = 0; j < DM; j++) { const [x0, y0] = posOf(1, j); line(x0, y0, x1, y1, DATA.W_o[j * D + sel.u], wmaxO, true); } }
+    if (sel.col === 1) {
+      const [xm, ym] = posOf(1, sel.u);
+      for (let d = 0; d < D; d++) { const [x0, y0] = posOf(0, d); line(x0, y0, xm, ym, DATA.W_i[d * DM + sel.u], wmaxI, true); }
+      for (let d = 0; d < D; d++) { const [x1, y1] = posOf(2, d); line(xm, ym, x1, y1, DATA.W_o[sel.u * D + d], wmaxO, true); }
+    }
+  }
+  // dots
+  for (let col = 0; col < 3; col++) {
+    const st = statsOf(col), n = col === 1 ? DM : D;
+    let smax = 0; for (let u = 0; u < n; u++) smax = Math.max(smax, st.std[u]);
+    for (let u = 0; u < n; u++) {
+      const [x, y] = posOf(col, u), t = Math.sqrt(st.std[u] / (smax || 1));
+      let rgb;
+      if (colMode === 'freq') { const f = freqRGB(st.dom[u]); rgb = f.map(v => Math.round(v * (0.25 + 0.75 * t) + 30 * (1 - t))); if (st.std[u] === 0) rgb = [50, 50, 60]; }
+      else rgb = seqColor(t);
+      ctx.fillStyle = `rgb(${rgb.join(',')})`;
+      ctx.beginPath(); ctx.arc(x, y, col === 1 ? 2.6 : 2.8, 0, 2 * Math.PI); ctx.fill();
+    }
+  }
+  if (sel) { const [x, y] = posOf(sel.col, sel.u); ctx.strokeStyle = pinned ? '#ff0' : '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 5.5, 0, 2 * Math.PI); ctx.stroke(); }
+}
+
+function drawDetail() {
+  const sel = pinned || hover, title = document.getElementById('unit-title'), box = document.getElementById('grids'), cell = document.getElementById('cell');
+  if (!sel) { title.textContent = 'hover a dot'; box.innerHTML = ''; cell.innerHTML = '&nbsp;'; return; }
+  const gs = gridsOf(sel), st = statsOf(sel.col);
+  title.innerHTML = `${gs[0].name.split(':')[0]} · dominant frequency <span style="color:${K.includes(st.dom[sel.u]) ? PALETTE[K.indexOf(st.dom[sel.u]) % PALETTE.length] : '#ccc'}">k=${st.dom[sel.u]}</span> · std over inputs ${st.std[sel.u].toFixed(3)}${pinned ? ' · pinned (Esc to unpin)' : ''}`;
+  if (box.children.length !== gs.length) { box.innerHTML = gs.map((g, i) => `<div class="g"><canvas id="dg${i}" width="${GW}" height="${GW}"></canvas><div class="cap" id="dc${i}"></div></div>`).join(''); for (let i = 0; i < gs.length; i++) { const cv = document.getElementById('dg' + i); cv.addEventListener('mousemove', e => { const r = cv.getBoundingClientRect(); const b = Math.floor((e.clientX - r.left) / r.width * P), a = Math.floor((e.clientY - r.top) / r.height * P); if (a >= 0 && b >= 0 && a < P && b < P && (!cellHover || cellHover.a !== a || cellHover.b !== b)) { cellHover = { a, b }; drawDetail(); } }); cv.addEventListener('mouseleave', () => { cellHover = null; drawDetail(); }); } }
+  const texts = [];
+  gs.forEach((item, i) => {
+    const cv = document.getElementById('dg' + i), ctx = cv.getContext('2d'), img = ctx.createImageData(GW, GW);
+    let f = null, vmax = 0, peak = 0, peakV = -1;
+    if (view === 'dft') { f = dft2d(item.g); for (let q = 0; q < N; q++) { if (hideDC && q === 0) continue; if (f.mag[q] > vmax) vmax = f.mag[q]; if (f.mag[q] > peakV) { peakV = f.mag[q]; peak = q; } } }
+    else { for (let q = 0; q < N; q++) { const v = Math.abs(item.g[q]); if (v > vmax) vmax = v; if (v > peakV) { peakV = v; peak = q; } } }
+    for (let a = 0; a < P; a++) for (let b = 0; b < P; b++) {
+      const q = a * P + b;
+      const rgb = view === 'dft' ? ((hideDC && q === 0) ? [40, 40, 40] : domainColor(f.re[q], f.im[q], vmax)) : (item.signed ? divColor(item.g[q], vmax) : seqColor(item.g[q] / (vmax || 1)));
+      for (let y = a * GCELL; y < (a + 1) * GCELL; y++) for (let x = b * GCELL; x < (b + 1) * GCELL; x++) { const o = (y * GW + x) * 4; img.data[o] = rgb[0]; img.data[o + 1] = rgb[1]; img.data[o + 2] = rgb[2]; img.data[o + 3] = 255; }
+    }
+    ctx.putImageData(img, 0, 0);
+    if (cellHover) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(cellHover.b * GCELL + 0.5, cellHover.a * GCELL + 0.5, GCELL - 1, GCELL - 1); }
+    const pa = Math.floor(peak / P), pb = peak % P;
+    document.getElementById('dc' + i).textContent = item.name + (view === 'dft' ? ` · peak (k₁=${pa}, k₂=${pb})` : ` · max |v| ${vmax.toFixed(2)}`);
+    if (cellHover) { const q = cellHover.a * P + cellHover.b; texts.push(`${item.name.split(': ')[1] || item.name.split(' (')[0]}: ${view === 'dft' ? '|F| ' + f.mag[q].toFixed(2) : item.g[q].toFixed(3)}`); }
+  });
+  cell.textContent = cellHover ? (view === 'dft' ? `(k₁=${cellHover.a}, k₂=${cellHover.b})  ` : `(a=${cellHover.a}, b=${cellHover.b}, a+b=${(cellHover.a + cellHover.b) % P})  `) + texts.join(' · ') : '';
+}
+
+function legend() {
+  document.getElementById('legend').innerHTML =
+    `Left column: the 128 stream dimensions after attention (x₁), the MLP's input. Middle: the 512 hidden neurons, pre- and post-ReLU. Right: the 128 dimensions of the MLP output, which the unembedding reads (no skip connection). ` +
+    `Each dot's "picture" is its value on all 43×43 inputs (a, b), or that picture's 2-D DFT. Dot colour = dominant frequency of the picture (${K.map((k, i) => `<span style="color:${PALETTE[i % PALETTE.length]}">k=${k}</span>`).join(', ')}, grey = other); brightness = activity (std over inputs). ` +
+    `Lines are weights: <span style="color:#e94560">red +</span>, <span style="color:#3b82f6">blue −</span>, thickness ∝ |w| relative to the matrix maximum; tiny ones are skipped.`;
+}
+
+function draw() { if (!DATA) return; drawNet(); drawDetail(); }
+
+const net = document.getElementById('net');
+net.addEventListener('mousemove', e => { const r = net.getBoundingClientRect(); const u = unitAt((e.clientX - r.left) * net.width / r.width, (e.clientY - r.top) * net.height / r.height); if ((u && (!hover || hover.col !== u.col || hover.u !== u.u)) || (!u && hover)) { hover = u; cellHover = null; draw(); } });
+net.addEventListener('mouseleave', () => { if (hover) { hover = null; draw(); } });
+net.addEventListener('click', () => { pinned = hover ? { ...hover } : null; draw(); });
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  const sel = pinned || hover; if (!sel) return;
+  const n = sel.col === 1 ? DM : D;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { pinned = { col: sel.col, u: (sel.u + (e.key === 'ArrowDown' ? 1 : -1) + n) % n }; draw(); e.preventDefault(); }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { const col = Math.max(0, Math.min(2, sel.col + (e.key === 'ArrowRight' ? 1 : -1))); pinned = { col, u: col === 1 ? sel.u % DM : sel.u % D }; draw(); e.preventDefault(); }
+  if (e.key === 'Escape') { pinned = null; draw(); }
+});
+document.querySelectorAll('.view-btn').forEach(b => b.addEventListener('click', () => { view = b.dataset.view; document.querySelectorAll('.view-btn').forEach(x => x.classList.toggle('active', x === b)); document.getElementById('dc-lbl').style.display = view === 'dft' ? '' : 'none'; draw(); }));
+document.getElementById('dc-chk').addEventListener('change', e => { hideDC = e.target.checked; draw(); });
+document.querySelectorAll('.lines-btn').forEach(b => b.addEventListener('click', () => { lines = b.dataset.lines; document.querySelectorAll('.lines-btn').forEach(x => x.classList.toggle('active', x === b)); draw(); }));
+document.querySelectorAll('.col-btn').forEach(b => b.addEventListener('click', () => { colMode = b.dataset.col; document.querySelectorAll('.col-btn').forEach(x => x.classList.toggle('active', x === b)); draw(); }));
+
+Timeline.init({
+  container: '#timeline', modes: ['mlp'],
+  onIndex: index => { K = index.K; legend(); },
+  onData: (step, mode, data) => { DATA = data; topLines = null; document.getElementById('info').textContent = `step ${step} · accuracy ${data.accuracy}%`; draw(); },
+});
+</script>
+</body>
+</html>

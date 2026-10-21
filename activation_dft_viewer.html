@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Activation functions in DFT space</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+#top-bar { padding: 10px 20px; background: #16213e; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+#top-bar h1 { font-size: 16px; font-weight: 600; color: #ccc; }
+.btn-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.btn-group .lbl { color: #777; font-size: 11px; margin-right: 4px; }
+.tbtn { background: #0f3460; color: #888; border: 1px solid #444; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 12px; }
+.tbtn:hover { background: #1a5276; }
+.tbtn.active { background: #e94560; color: #fff; border-color: #e94560; }
+#controls { padding: 8px 20px; background: #141b33; display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+.ctl { display: flex; align-items: center; gap: 6px; color: #aaa; font-size: 12px; }
+.ctl input[type=range] { width: 120px; }
+.ctl input[type=number] { width: 52px; background: #0f3460; color: #eee; border: 1px solid #444; font-family: inherit; padding: 2px 4px; }
+.ctl b { color: #eee; min-width: 46px; display: inline-block; }
+#main { padding: 15px; display: flex; flex-direction: column; gap: 14px; }
+#grids { display: flex; gap: 14px; flex-wrap: wrap; }
+.gbox { display: flex; flex-direction: column; gap: 4px; align-items: center; width: 262px; }
+.gbox .gt { color: #aaa; font-size: 11px; text-align: center; min-height: 44px; line-height: 1.3; }
+.gbox canvas { border: 1px solid #333; image-rendering: pixelated; cursor: crosshair; }
+.gbox .ginfo { color: #ddd; font-size: 11px; min-height: 32px; text-align: center; line-height: 1.4; }
+.arrow { align-self: center; color: #e94560; font-size: 26px; padding: 0 2px; }
+#row2 { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+.info-box { background: #16213e; border: 1px solid #333; border-radius: 5px; padding: 12px; }
+.info-box h2 { font-size: 13px; color: #888; margin-bottom: 8px; }
+.info-box p { color: #aaa; font-size: 12px; line-height: 1.55; max-width: 560px; }
+table.terms { border-collapse: collapse; font-size: 12px; }
+table.terms th { color: #777; font-weight: normal; text-align: left; padding: 2px 8px; }
+table.terms td { padding: 2px 8px; border-bottom: 1px solid #222; color: #ccc; white-space: nowrap; }
+.tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+.tag.sum { background: #e94560; color: #fff; } .tag.dif { background: #3b82f6; color: #fff; }
+.tag.axis { background: #444; color: #ddd; } .tag.harm { background: #22c55e; color: #000; } .tag.dc { background: #222; color: #888; }
+code { color: #f0c674; }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <h1>Activation functions in DFT space</h1>
+  <div class="btn-group" id="act-group"><span class="lbl">f =</span></div>
+  <div class="btn-group">
+    <span class="lbl">DFT display</span>
+    <button class="tbtn active" id="hidedc-btn" title="leave the (0,0) mean entry black so it does not swamp the scale">hide DC</button>
+    <button class="tbtn" id="log-btn" title="brightness ∝ log(1 + 100·|F|/max)">log magnitude</button>
+    <span class="lbl" style="margin-left:8px">zoom |k| ≤</span><input type="number" id="zoom" min="2" max="64" value="8" style="width:48px;background:#0f3460;color:#eee;border:1px solid #444;font-family:inherit;padding:2px 4px">
+    <button class="tbtn" id="full-btn" title="show the whole spectrum">full</button>
+  </div>
+</div>
+<div id="controls">
+  <div class="ctl">N <input type="number" id="N" min="8" max="128" value="43"></div>
+  <div class="ctl">k₁ <input type="number" id="k1" min="1" max="21" value="1"></div>
+  <div class="ctl">k₂ <input type="number" id="k2" min="1" max="21" value="1"></div>
+  <div class="ctl">A <input type="range" id="A" min="0" max="4" step="0.01" value="1"><b id="Av"></b></div>
+  <div class="ctl">B <input type="range" id="B" min="0" max="4" step="0.01" value="1"><b id="Bv"></b></div>
+  <div class="ctl">bias c <input type="range" id="c" min="-4" max="4" step="0.01" value="0"><b id="cv"></b></div>
+  <div class="ctl">φₐ <input type="range" id="pa" min="-180" max="180" step="1" value="0"><b id="pav"></b></div>
+  <div class="ctl">φ_b <input type="range" id="pb" min="-180" max="180" step="1" value="0"><b id="pbv"></b></div>
+  <button class="tbtn" id="lock-btn" title="keep B = A while dragging A">B = A</button>
+</div>
+
+<div id="main">
+  <div id="grids">
+    <div class="gbox"><div class="gt" id="t0"></div><canvas id="g0" width="258" height="258"></canvas><div class="ginfo" id="i0"></div></div>
+    <div class="gbox"><div class="gt" id="t1"></div><canvas id="g1" width="258" height="258"></canvas><div class="ginfo" id="i1"></div></div>
+    <div class="arrow">f ⟶</div>
+    <div class="gbox"><div class="gt" id="t2"></div><canvas id="g2" width="258" height="258"></canvas><div class="ginfo" id="i2"></div></div>
+    <div class="gbox"><div class="gt" id="t3"></div><canvas id="g3" width="258" height="258"></canvas><div class="ginfo" id="i3"></div></div>
+  </div>
+  <div id="row2">
+    <div class="info-box">
+      <h2 id="fn-title">f on the operating range, with its even and odd parts about the bias</h2>
+      <canvas id="fn-canvas" width="330" height="200"></canvas>
+      <p id="fn-note"></p>
+    </div>
+    <div class="info-box">
+      <h2 id="curve-title">Sum-term coefficient</h2>
+      <canvas id="curve-canvas" width="330" height="200"></canvas>
+      <p id="curve-note"></p>
+    </div>
+    <div class="info-box">
+      <h2>Largest output Fourier terms</h2>
+      <table class="terms" id="terms"></table>
+    </div>
+    <div class="info-box">
+      <h2>What to look for</h2>
+      <p>
+        The input is <code>c + A cos(k₁u + φₐ) + B cos(k₂v + φ_b)</code> on the N×N torus, so its DFT has exactly five entries: DC and the four axis points ±(k₁,0), ±(0,k₂).
+        Any affine f keeps it that way. Any other f creates new entries. The ones that matter for modular addition are the
+        <span class="tag sum">sum</span> term at ±(k₁,k₂), a wave in k₁u+k₂v, and its unavoidable twin the
+        <span class="tag dif">difference</span> term at ±(k₁,−k₂): replacing v by −v leaves the input unchanged, so for <i>every</i> f these two have equal magnitude.
+        Shifting u and v by π negates the input but fixes cos(k₁u+k₂v), so only the <i>even part</i> of f about the bias produces them; the odd part only feeds the axes and odd harmonics.
+        The phase of the sum term is always φₐ+φ_b and that of the difference term φₐ−φ_b. In complex-coefficient terms the sum term is the <i>product</i> a·b of the two inputs (phases add), which is what modular addition needs.
+        Try ReLU at c=0 (coefficient 8A/3π² ≈ 0.27A when A=B, and the same for |t|/2), then slide the bias to see it vanish once f is affine on the whole range, then compare tanh, GELU, and t² while raising A.
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------- activations ----------
+function erf(x) { // Abramowitz–Stegun 7.1.26
+  const s = Math.sign(x); x = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * x);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return s * y;
+}
+const ACTS = [
+  { id: 'identity', label: 'identity', f: t => t },
+  { id: 'relu', label: 'ReLU', f: t => Math.max(t, 0) },
+  { id: 'abs', label: '|t|', f: t => Math.abs(t) },
+  { id: 'leaky', label: 'LeakyReLU 0.1', f: t => t > 0 ? t : 0.1 * t },
+  { id: 'gelu', label: 'GELU', f: t => 0.5 * t * (1 + erf(t / Math.SQRT2)) },
+  { id: 'silu', label: 'SiLU', f: t => t / (1 + Math.exp(-t)) },
+  { id: 'softplus', label: 'softplus', f: t => t > 30 ? t : Math.log1p(Math.exp(t)) },
+  { id: 'tanh', label: 'tanh', f: t => Math.tanh(t) },
+  { id: 'sigmoid', label: 'sigmoid', f: t => 1 / (1 + Math.exp(-t)) },
+  { id: 'square', label: 't²', f: t => t * t },
+  { id: 'cube', label: 't³', f: t => t * t * t },
+  { id: 'sin', label: 'sin t', f: t => Math.sin(t) },
+];
+let act = ACTS[1];
+let N = 43, k1 = 1, k2 = 1, A = 1, B = 1, cbias = 0, pa = 0, pb = 0;
+let hideDC = true, logMag = false, lockB = false, zoom = 8;
+let IN = null, OUT = null, FIN = null, FOUT = null;   // grids and spectra
+let hover = { panel: -1, i: 0, j: 0 };
+
+// ---------- DFT (separable, N^3) ----------
+function dft2(f, n) {
+  const re = new Float64Array(n * n), im = new Float64Array(n * n);
+  const cs = new Float64Array(n * n), sn = new Float64Array(n * n);
+  for (let k = 0; k < n; k++) for (let x = 0; x < n; x++) { const ang = -2 * Math.PI * k * x / n; cs[k * n + x] = Math.cos(ang); sn[k * n + x] = Math.sin(ang); }
+  const tr = new Float64Array(n * n), ti = new Float64Array(n * n);   // row transforms: tr[a][kb]
+  for (let a = 0; a < n; a++) for (let kb = 0; kb < n; kb++) {
+    let sr = 0, si = 0;
+    for (let b = 0; b < n; b++) { const v = f[a * n + b]; sr += v * cs[kb * n + b]; si += v * sn[kb * n + b]; }
+    tr[a * n + kb] = sr; ti[a * n + kb] = si;
+  }
+  for (let ka = 0; ka < n; ka++) for (let kb = 0; kb < n; kb++) {
+    let sr = 0, si = 0;
+    for (let a = 0; a < n; a++) {
+      const c = cs[ka * n + a], s = sn[ka * n + a], r = tr[a * n + kb], i = ti[a * n + kb];
+      sr += r * c - i * s; si += r * s + i * c;
+    }
+    re[ka * n + kb] = sr; im[ka * n + kb] = si;
+  }
+  return { re, im };
+}
+const wrap = (k, n) => ((k % n) + n) % n;
+// coefficient of cos(k1 u + k2 v + phase) in a real grid: (2/N²)·F(k1,k2) = amp·e^{i·phase}
+function coef(F, ka, kb, n) {
+  const idx = wrap(ka, n) * n + wrap(kb, n);
+  const s = (ka === 0 && kb === 0) ? 1 / (n * n) : 2 / (n * n);
+  return [F.re[idx] * s, F.im[idx] * s];
+}
+const cabs = z => Math.hypot(z[0], z[1]);
+const carg = z => Math.atan2(z[1], z[0]);
+const degs = r => r * 180 / Math.PI;
+const fmt = z => `${cabs(z).toFixed(4)} ∠${Math.round(degs(carg(z))) || 0}°`;
+
+function compute() {
+  const n = N;
+  IN = new Float64Array(n * n); OUT = new Float64Array(n * n);
+  const ra = pa * Math.PI / 180, rb = pb * Math.PI / 180;
+  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+    const u = 2 * Math.PI * a / n, v = 2 * Math.PI * b / n;
+    const t = cbias + A * Math.cos(k1 * u + ra) + B * Math.cos(k2 * v + rb);
+    IN[a * n + b] = t; OUT[a * n + b] = act.f(t);
+  }
+  FIN = dft2(IN, n); FOUT = dft2(OUT, n);
+}
+
+// direct sum-term coefficient (for the curves): (2/N²) Σ f(...) e^{-i(k1 u + k2 v)} with N=48 grid
+function sumCoef(fn, AA, BB, cc, n) {
+  let sr = 0, si = 0;
+  const ra = pa * Math.PI / 180, rb = pb * Math.PI / 180;
+  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+    const u = 2 * Math.PI * a / n, v = 2 * Math.PI * b / n;
+    const y = fn(cc + AA * Math.cos(k1 * u + ra) + BB * Math.cos(k2 * v + rb));
+    const ang = -(k1 * u + k2 * v);
+    sr += y * Math.cos(ang); si += y * Math.sin(ang);
+  }
+  return [2 * sr / (n * n), 2 * si / (n * n)];
+}
+
+// ---------- colours ----------
+function divergingColor(v, vabs) {
+  let t = vabs > 0 ? Math.max(0, Math.min(1, (v + vabs) / (2 * vabs))) : 0.5;
+  let r, g, b;
+  if (t < 0.5) { const s = t / 0.5; r = 20 + s * 235; g = 60 + s * 195; b = 200 + s * 55; }
+  else { const s = (t - 0.5) / 0.5; r = 255 - s * 35; g = 255 - s * 225; b = 255 - s * 225; }
+  return [r | 0, g | 0, b | 0];
+}
+function hslToRgb(h, s, l) {
+  const hue2rgb = (p, q, t) => { if (t < 0) t += 1; if (t > 1) t -= 1; if (t < 1/6) return p + (q - p) * 6 * t; if (t < 1/2) return q; if (t < 2/3) return p + (q - p) * (2/3 - t) * 6; return p; };
+  let r, g, b;
+  if (s === 0) r = g = b = l;
+  else { const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q; r = hue2rgb(p, q, h + 1/3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1/3); }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+function domainColor(re, im, maxMag) {
+  const mag = Math.hypot(re, im);
+  const hue = ((Math.atan2(im, re) / (2 * Math.PI)) + 1) % 1;
+  let l = maxMag > 0 ? mag / maxMag : 0;
+  if (logMag) l = Math.log(1 + 100 * l) / Math.log(101);
+  return hslToRgb(hue, 1, l * 0.5);
+}
+
+// ---------- drawing ----------
+function drawReal(canvasId, grid, titleId, title) {
+  const canvas = document.getElementById(canvasId), ctx = canvas.getContext('2d');
+  const n = N, W = canvas.width, cell = W / n;
+  const img = ctx.createImageData(W, W);
+  let vabs = 0; for (let i = 0; i < grid.length; i++) vabs = Math.max(vabs, Math.abs(grid[i]));
+  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+    const [r, g, bb] = divergingColor(grid[a * n + b], vabs);
+    const x0 = Math.floor(b * cell), y0 = Math.floor(a * cell), x1 = Math.floor((b + 1) * cell), y1 = Math.floor((a + 1) * cell);
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * W + x) * 4; img.data[i] = r; img.data[i + 1] = g; img.data[i + 2] = bb; img.data[i + 3] = 255; }
+  }
+  ctx.putImageData(img, 0, 0);
+  document.getElementById(titleId).innerHTML = title + `<br><span style="color:#666">rows a (u), cols b (v) · blue −${vabs.toFixed(2)} … red +${vabs.toFixed(2)}</span>`;
+}
+function drawSpec(canvasId, F, titleId, title) {
+  const canvas = document.getElementById(canvasId), ctx = canvas.getContext('2d');
+  const n = N, W = canvas.width, z = Z(), n2 = 2 * z + 1, cell = W / n2;
+  const img = ctx.createImageData(W, W);
+  let maxMag = 0;
+  for (let i = 0; i < n * n; i++) { if (hideDC && i === 0) continue; maxMag = Math.max(maxMag, Math.hypot(F.re[i], F.im[i])); }
+  // centred window: screen row r ↔ ka = r − z, screen col s ↔ kb = s − z
+  for (let r = 0; r < n2; r++) for (let s = 0; s < n2; s++) {
+    const ka = wrap(r - z, n), kb = wrap(s - z, n), idx = ka * n + kb;
+    let col = (hideDC && ka === 0 && kb === 0) ? [0, 0, 0] : domainColor(F.re[idx], F.im[idx], maxMag);
+    const x0 = Math.floor(s * cell), y0 = Math.floor(r * cell), x1 = Math.floor((s + 1) * cell), y1 = Math.floor((r + 1) * cell);
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * W + x) * 4; img.data[i] = col[0]; img.data[i + 1] = col[1]; img.data[i + 2] = col[2]; img.data[i + 3] = 255; }
+  }
+  ctx.putImageData(img, 0, 0);
+  // cell grid, axes through DC
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1;
+  for (let i = 1; i < n2; i++) {
+    ctx.beginPath(); ctx.moveTo(Math.floor(i * cell) + 0.5, 0); ctx.lineTo(Math.floor(i * cell) + 0.5, W); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, Math.floor(i * cell) + 0.5); ctx.lineTo(W, Math.floor(i * cell) + 0.5); ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.beginPath(); ctx.moveTo(0, (z + 0.5) * cell); ctx.lineTo(W, (z + 0.5) * cell); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo((z + 0.5) * cell, 0); ctx.lineTo((z + 0.5) * cell, W); ctx.stroke();
+  // tick labels when cells are big enough
+  if (cell >= 11) {
+    ctx.fillStyle = '#777'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    for (let i = 0; i < n2; i++) { const k = i - z; if (k === 0) continue; ctx.fillText(k, (i + 0.5) * cell, 9); ctx.fillText(k, (i + 0.5) * cell, W - 2); }
+    ctx.textAlign = 'left';
+    for (let i = 0; i < n2; i++) { const k = i - z; if (k === 0) continue; ctx.fillText(k, 2, (i + 0.5) * cell + 3); }
+  }
+  const mark = (ka, kb, color) => {
+    if (Math.abs(ka) > z || Math.abs(kb) > z) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+    ctx.strokeRect((kb + z) * cell + 1, (ka + z) * cell + 1, cell - 2, cell - 2);
+  };
+  mark(k1, k2, '#e94560'); mark(-k1, -k2, '#e94560'); mark(k1, -k2, '#3b82f6'); mark(-k1, k2, '#3b82f6');
+  const h = Math.floor(n / 2);
+  document.getElementById(titleId).innerHTML = title + `<br><span style="color:#666">k₁ down, k₂ across, showing |k| ≤ ${z}${z < h ? ' of ' + h : ''} · hue = phase, brightness ${logMag ? 'log' : 'linear'} in |F|, max = ${(2 * maxMag / (n * n)).toFixed(3)}${hideDC ? ' (DC hidden)' : ''}</span>`;
+}
+
+function classify(ka, kb) {
+  if (ka === 0 && kb === 0) return ['dc', 'DC'];
+  if ((Math.abs(ka) === k1 && Math.abs(kb) === k2) && Math.sign(ka) === Math.sign(kb)) return ['sum', 'sum k₁u+k₂v'];
+  if ((Math.abs(ka) === k1 && Math.abs(kb) === k2)) return ['dif', 'difference k₁u−k₂v'];
+  if (ka === 0 || kb === 0) return ['axis', (ka === 0 ? 'pure v' : 'pure u') + ((ka === 0 ? Math.abs(kb) === k2 : Math.abs(ka) === k1) ? ' (input)' : ' harmonic')];
+  return ['harm', 'mixed harmonic'];
+}
+const sgn = (ka, kb) => `(${ka >= 0 ? ' ' : ''}${ka}, ${kb >= 0 ? ' ' : ''}${kb})`;
+
+function drawTerms() {
+  const n = N, h = Math.floor(n / 2);
+  const rows = [];
+  for (let ka = -h; ka <= h; ka++) for (let kb = -h; kb <= h; kb++) {
+    if (ka < 0 || (ka === 0 && kb < 0)) continue;          // one of each conjugate pair
+    const z = coef(FOUT, ka, kb, n);
+    rows.push({ ka, kb, z, m: cabs(z) });
+  }
+  rows.sort((p, q) => q.m - p.m);
+  const top = rows.slice(0, 12);
+  let html = '<tr><th>(k₁,k₂)</th><th>amplitude ∠ phase</th><th>kind</th></tr>';
+  for (const r of top) {
+    const [cls, lab] = classify(r.ka, r.kb);
+    html += `<tr><td>${sgn(r.ka, r.kb)}</td><td>${fmt(r.z)}</td><td><span class="tag ${cls}">${lab}</span></td></tr>`;
+  }
+  document.getElementById('terms').innerHTML = html;
+}
+
+function drawFn() {
+  const canvas = document.getElementById('fn-canvas'), ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height; ctx.clearRect(0, 0, W, H);
+  const R = A + B || 1;
+  const ts = [], fs = [], es = [], os = [];
+  for (let i = 0; i <= 200; i++) {
+    const t = -1.15 * R + 2.3 * R * i / 200;
+    const fp = act.f(cbias + t), fm = act.f(cbias - t);
+    ts.push(t); fs.push(fp); es.push((fp + fm) / 2); os.push((fp - fm) / 2);
+  }
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < ts.length; i++) { lo = Math.min(lo, fs[i], es[i], os[i]); hi = Math.max(hi, fs[i], es[i], os[i]); }
+  if (hi - lo < 1e-9) { hi = lo + 1; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const X = t => 30 + (W - 40) * (t + 1.15 * R) / (2.3 * R), Y = y => 10 + (H - 30) * (1 - (y - lo) / (hi - lo));
+  // operating range shading
+  ctx.fillStyle = 'rgba(233,69,96,0.08)'; ctx.fillRect(X(-R), 10, X(R) - X(-R), H - 30);
+  ctx.strokeStyle = '#333'; ctx.beginPath(); ctx.moveTo(X(0), 10); ctx.lineTo(X(0), H - 20); ctx.stroke();
+  if (lo < 0 && hi > 0) { ctx.beginPath(); ctx.moveTo(30, Y(0)); ctx.lineTo(W - 10, Y(0)); ctx.stroke(); }
+  const line = (ys, color, w) => { ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); ys.forEach((y, i) => i ? ctx.lineTo(X(ts[i]), Y(y)) : ctx.moveTo(X(ts[i]), Y(y))); ctx.stroke(); };
+  line(os, '#3b82f6', 1.2); line(es, '#22c55e', 1.6); line(fs, '#fff', 2);
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  ctx.fillText(`t = (input − c), shaded = reachable range ±(A+B)`, W / 2, H - 4);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#fff'; ctx.fillText('f(c+t)', 34, 20); ctx.fillStyle = '#22c55e'; ctx.fillText('even part', 34, 32); ctx.fillStyle = '#3b82f6'; ctx.fillText('odd part', 34, 44);
+  // second-difference of f at c as a crude "curvature" readout
+  const d = 0.05 * R, f2 = (act.f(cbias + d) - 2 * act.f(cbias) + act.f(cbias - d)) / (d * d);
+  const f2h = (act.f(cbias + d / 2) - 2 * act.f(cbias) + act.f(cbias - d / 2)) / (d * d / 4);
+  const smooth = Math.abs(f2 - f2h) <= 0.2 * Math.max(Math.abs(f2), Math.abs(f2h), 1e-6) || (Math.abs(f2) < 1e-6 && Math.abs(f2h) < 1e-6);
+  document.getElementById('fn-note').innerHTML =
+    `Only the <span style="color:#22c55e">even part</span> about c creates the sum and difference terms. ` +
+    (smooth
+      ? `The quadratic (small-amplitude) approximation predicts a sum-term coefficient of f″(c)·A·B/2 = ${(f2 * A * B / 2).toFixed(3)}; the exact value is in the next box.`
+      : `f has a kink at c, so f″(c) and the quadratic approximation are not defined here; the exact coefficient is in the next box.`);
+}
+
+function drawCurve() {
+  const canvas = document.getElementById('curve-canvas'), ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height; ctx.clearRect(0, 0, W, H);
+  const n = 40;
+  const M = 48;
+  const cs = [], vc = [], as = [], va = [];
+  const cmax = Math.max(1.2 * (A + B), 0.5);
+  for (let i = 0; i <= n; i++) { const cc = -cmax + 2 * cmax * i / n; cs.push(cc); vc.push(sumCoef(act.f, A, B, cc, M)[0]); }
+  const amax = Math.max(1.2 * Math.max(A, B), 0.5);
+  for (let i = 0; i <= n; i++) { const s = amax * i / n; as.push(s); va.push(sumCoef(act.f, s, s, cbias, M)[0]); }
+  const cur = coef(FOUT, k1, k2, N);
+  const curRe = cur[0];
+  let lo = Math.min(0, ...vc, ...va, curRe), hi = Math.max(0, ...vc, ...va, curRe);
+  if (hi - lo < 1e-9) hi = lo + 1;
+  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  const Y = y => 10 + (H - 30) * (1 - (y - lo) / (hi - lo));
+  const Xc = cc => 34 + (W - 44) * (cc + cmax) / (2 * cmax);
+  const Xa = s => 34 + (W - 44) * s / amax;
+  ctx.strokeStyle = '#333'; ctx.beginPath(); ctx.moveTo(34, Y(0)); ctx.lineTo(W - 10, Y(0)); ctx.stroke();
+  const line = (xs, ys, color) => { ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.beginPath(); ys.forEach((y, i) => i ? ctx.lineTo(xs[i], Y(y)) : ctx.moveTo(xs[i], Y(y))); ctx.stroke(); };
+  line(cs.map(Xc), vc, '#e94560');
+  line(as.map(Xa), va, '#ffb347');
+  // current point
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(Xc(cbias), Y(curRe), 4, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+  ctx.fillText(hi.toFixed(2), 32, 16); ctx.fillText(lo.toFixed(2), 32, H - 20);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#e94560'; ctx.fillText(`vs bias c ∈ [−${cmax.toFixed(1)}, ${cmax.toFixed(1)}] at A=${A.toFixed(2)}, B=${B.toFixed(2)}`, 38, 20);
+  ctx.fillStyle = '#ffb347'; ctx.fillText(`vs amplitude A=B ∈ [0, ${amax.toFixed(1)}] at c=${cbias.toFixed(2)}`, 38, 32);
+  ctx.fillStyle = '#fff'; ctx.fillText('● current', 38, 44);
+  const dz = coef(FOUT, k1, -k2, N);
+  const ph = (degs(carg(cur)) - (pa + pb) + 540) % 360 - 180;
+  document.getElementById('curve-title').textContent = `Sum-term coefficient of cos(k₁u + k₂v + ·), real part along the curves`;
+  document.getElementById('curve-note').innerHTML =
+    `now: sum term ${fmt(cur)}, difference term ${fmt(dz)} (equal magnitude, always).<br>` +
+    `sum-term phase − (φₐ+φ_b) = ${ph.toFixed(1)}° (always 0 up to sign: the coefficient is a·b). ` +
+    `coefficient / (A·B) = ${(A * B > 0 ? cabs(cur) / (A * B) : 0).toFixed(3)}` +
+    (act.id === 'relu' && Math.abs(cbias) < 1e-9 && Math.abs(A - B) < 1e-9 ? ` · ReLU at c=0, A=B gives 8A/3π² = ${(8 * A / (3 * Math.PI * Math.PI)).toFixed(4)}` : '');
+}
+
+function hoverInfo() {
+  for (let p = 0; p < 4; p++) {
+    const el = document.getElementById('i' + p);
+    if (hover.panel !== p) { el.innerHTML = (p === 1 || p === 3) ? '<span style="color:#666">hover a cell for its coefficient</span>' : '&nbsp;'; continue; }
+    const n = N, h = Math.floor(n / 2);
+    if (p === 0 || p === 2) {
+      const g = p === 0 ? IN : OUT;
+      el.textContent = `(a=${hover.i}, b=${hover.j})  value = ${g[hover.i * n + hover.j].toFixed(4)}`;
+    } else {
+      const F = p === 1 ? FIN : FOUT;
+      const zz = Z(); if (hover.i >= 2 * zz + 1 || hover.j >= 2 * zz + 1) { el.innerHTML = '&nbsp;'; continue; }
+      const ka = hover.i - zz, kb = hover.j - zz;
+      const z = coef(F, ka, kb, n);
+      const [cls, lab] = classify(ka, kb);
+      el.innerHTML = `${sgn(ka, kb)}  ${fmt(z)}  <span class="tag ${cls}">${lab}</span>`;
+    }
+  }
+}
+
+function draw() {
+  compute();
+  drawReal('g0', IN, 't0', `input: c + A cos(${k1}u+φₐ) + B cos(${k2}v+φ_b)`);
+  drawSpec('g1', FIN, 't1', 'DFT of input (five entries)');
+  drawReal('g2', OUT, 't2', `output: f(input), f = ${act.label}`);
+  drawSpec('g3', FOUT, 't3', 'DFT of output');
+  drawTerms(); drawFn(); drawCurve(); hoverInfo();
+  document.getElementById('Av').textContent = A.toFixed(2); document.getElementById('Bv').textContent = B.toFixed(2);
+  document.getElementById('cv').textContent = cbias.toFixed(2);
+  document.getElementById('pav').textContent = pa + '°'; document.getElementById('pbv').textContent = pb + '°';
+}
+
+function init() {
+  const ag = document.getElementById('act-group');
+  for (const a of ACTS) {
+    const b = document.createElement('button'); b.className = 'tbtn act-btn' + (a === act ? ' active' : ''); b.textContent = a.label; b.dataset.id = a.id;
+    b.addEventListener('click', () => { act = a; document.querySelectorAll('.act-btn').forEach(x => x.classList.toggle('active', x.dataset.id === a.id)); b.blur(); draw(); });
+    ag.appendChild(b);
+  }
+  const bind = (id, setter) => document.getElementById(id).addEventListener('input', e => { setter(e.target.value); draw(); });
+  bind('A', v => { A = +v; if (lockB) { B = A; document.getElementById('B').value = B; } });
+  bind('B', v => { B = +v; });
+  bind('c', v => { cbias = +v; });
+  bind('pa', v => { pa = +v; });
+  bind('pb', v => { pb = +v; });
+  const bindN = (id, setter) => document.getElementById(id).addEventListener('change', e => { setter(e.target.value); draw(); });
+  bindN('N', v => { N = Math.max(8, Math.min(128, Math.round(+v))); e_fix('N', N); k1 = Math.min(k1, Math.floor(N / 2)); k2 = Math.min(k2, Math.floor(N / 2)); e_fix('k1', k1); e_fix('k2', k2); });
+  bindN('k1', v => { k1 = Math.max(1, Math.min(Math.floor(N / 2), Math.round(+v))); e_fix('k1', k1); });
+  bindN('k2', v => { k2 = Math.max(1, Math.min(Math.floor(N / 2), Math.round(+v))); e_fix('k2', k2); });
+  document.getElementById('hidedc-btn').addEventListener('click', e => { hideDC = !hideDC; e.target.classList.toggle('active', hideDC); e.target.blur(); draw(); });
+  document.getElementById('log-btn').addEventListener('click', e => { logMag = !logMag; e.target.classList.toggle('active', logMag); e.target.blur(); draw(); });
+  document.getElementById('zoom').addEventListener('change', e => { zoom = Math.max(2, Math.min(64, Math.round(+e.target.value))); e_fix('zoom', zoom); draw(); });
+  document.getElementById('full-btn').addEventListener('click', e => { zoom = Math.floor(N / 2); e_fix('zoom', zoom); e.target.blur(); draw(); });
+  document.getElementById('lock-btn').addEventListener('click', e => { lockB = !lockB; e.target.classList.toggle('active', lockB); if (lockB) { B = A; document.getElementById('B').value = B; } e.target.blur(); draw(); });
+  for (let p = 0; p < 4; p++) {
+    const c = document.getElementById('g' + p);
+    c.addEventListener('mousemove', e => {
+      const r = c.getBoundingClientRect(); const cell = c.width / ((p === 1 || p === 3) ? 2 * Z() + 1 : N);
+      const j = Math.floor((e.clientX - r.left) * c.width / r.width / cell), i = Math.floor((e.clientY - r.top) * c.height / r.height / cell);
+      const lim = (p === 1 || p === 3) ? 2 * Z() + 1 : N;
+      if (i >= 0 && i < lim && j >= 0 && j < lim) { hover = { panel: p, i, j }; hoverInfo(); }
+    });
+    c.addEventListener('mouseleave', () => { hover.panel = -1; hoverInfo(); });
+  }
+  draw();
+}
+function e_fix(id, v) { document.getElementById(id).value = v; }
+function Z() { return Math.min(zoom, Math.floor(N / 2)); }
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Embedding / Unembedding Viewer</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+#top-bar { padding: 10px 20px; background: #16213e; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+#top-bar h1 { font-size: 16px; font-weight: 600; color: #ccc; }
+#top-bar span.hint { color: #888; }
+.tbtn { background: #0f3460; color: #888; border: 1px solid #444; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-family: inherit; font-size: 12px; }
+.tbtn:hover { background: #1a5276; }
+.tbtn.active { background: #e94560; color: #fff; border-color: #e94560; }
+#main { padding: 15px 20px; display: flex; flex-direction: column; gap: 22px; }
+.mat { display: flex; flex-direction: column; gap: 6px; }
+.mat h2 { font-size: 13px; color: #aaa; }
+.mat .sub { font-size: 11px; color: #777; }
+.mat canvas { display: block; border: 1px solid #333; image-rendering: pixelated; cursor: crosshair; }
+.row { display: flex; gap: 14px; align-items: flex-start; }
+.col { display: flex; flex-direction: column; gap: 6px; }
+.side { width: 330px; display: flex; flex-direction: column; gap: 6px; font-size: 11px; color: #aaa; }
+.side canvas { border: 1px solid #333; display: block; }
+.side h3 { font-size: 12px; color: #aaa; min-height: 16px; }
+#legend { color: #888; font-size: 11px; display: flex; gap: 14px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div id="top-bar">
+  <h1>Embedding W<sub>E</sub> and unembedding W<sub>U</sub></h1>
+  <span class="hint" id="hint">mod 43 | d_model 128</span>
+  <button class="tbtn" id="sort-btn">sort columns by dominant frequency</button>
+  <button class="tbtn" id="share-btn" title="use one colour scale for all steps of the run">fixed colour scale</button>
+  <span id="info" style="color:#e94560"></span>
+</div>
+<div id="timeline"></div>
+<div id="main">
+  <div id="legend"></div>
+  <div class="mat" id="mat-WE"></div>
+  <div class="mat" id="mat-WU"></div>
+</div>
+
+<script src="timeline.js?v=5"></script>
+<script>
+const P = 43, D = 128, NF = 22;             // frequencies 0..21 (k and 43−k have equal magnitude)
+const CW = 7, RH = 7;                        // cell size of the matrix plots (px)
+const FH = 9;                                // row height of the DFT strip (px)
+let DATA = null, K = [], order = null, sorted = false, fixedScale = false;
+let hover = { mat: null, d: -1, a: -1, k: -1 };
+const PALETTE = ['#e94560', '#3b82f6', '#22c55e', '#ffb347', '#c084fc', '#2dd4bf'];
+const MATS = [
+  { id: 'WE', title: 'W<sub>E</sub> (43 × 128): row a = embedding of token a', rowName: 'a', note: 'column d = how input dimension d depends on the token a; below: |DFT over a| of that column' },
+  { id: 'WU', title: 'W<sub>U</sub>ᵀ (43 × 128): row c = unembedding (readout) of logit c', rowName: 'c', note: 'column d = how stream dimension d reads out into logit c; below: |DFT over c| of that column' },
+];
+
+// ---- colour maps ----
+function divColor(v, vmax) {                 // blue (−) → dark → red (+)
+  const t = Math.max(-1, Math.min(1, v / (vmax || 1)));
+  if (t >= 0) return [Math.round(20 + 225 * t), Math.round(20 + 50 * t), Math.round(40 + 40 * t)];
+  return [Math.round(20 + 30 * -t), Math.round(20 + 110 * -t), Math.round(40 + 215 * -t)];
+}
+function seqColor(t, rgb) {                  // dark → the given colour
+  t = Math.sqrt(Math.max(0, Math.min(1, t)));
+  return rgb.map((c, i) => Math.round([18, 18, 40][i] * (1 - t) + c * t));
+}
+const hex2rgb = h => h.match(/\w\w/g).map(x => parseInt(x, 16));
+function freqColor(k) { const i = K.indexOf(k); return i < 0 ? [200, 200, 200] : hex2rgb(PALETTE[i % PALETTE.length]); }
+
+// ---- DFT of each column over the residue index ----
+const TW_C = new Float64Array(NF * P), TW_S = new Float64Array(NF * P);
+for (let k = 0; k < NF; k++) for (let a = 0; a < P; a++) { const t = -2 * Math.PI * k * a / P; TW_C[k * P + a] = Math.cos(t); TW_S[k * P + a] = Math.sin(t); }
+function columnDFT(M) {                      // M: P x D row-major → {mag: NF x D, dom: D (dominant k ≥ 1), re, im}
+  const mag = new Float32Array(NF * D), re = new Float32Array(NF * D), im = new Float32Array(NF * D), dom = new Int16Array(D), domMag = new Float32Array(D);
+  for (let d = 0; d < D; d++) {
+    let best = 1, bm = -1;
+    for (let k = 0; k < NF; k++) {
+      let sr = 0, si = 0;
+      for (let a = 0; a < P; a++) { const v = M[a * D + d]; sr += v * TW_C[k * P + a]; si += v * TW_S[k * P + a]; }
+      re[k * D + d] = sr; im[k * D + d] = si; const m = Math.hypot(sr, si); mag[k * D + d] = m;
+      if (k >= 1 && m > bm) { bm = m; best = k; }
+    }
+    dom[d] = best; domMag[d] = bm;
+  }
+  return { mag, re, im, dom, domMag };
+}
+
+function prepare() {
+  for (const m of MATS) {
+    const M = DATA[m.id];
+    m.M = M; m.F = columnDFT(M);
+    let vmax = 0; for (let i = 0; i < M.length; i++) vmax = Math.max(vmax, Math.abs(M[i]));
+    let fmax = 0; for (let i = 0; i < m.F.mag.length; i++) fmax = Math.max(fmax, m.F.mag[i]);
+    m.vmax = vmax; m.fmax = fmax;
+    if (!m.vmaxAll || m.vmaxAll < vmax) m.vmaxAll = vmax;     // running max over the steps visited (fixed-scale mode)
+    if (!m.fmaxAll || m.fmaxAll < fmax) m.fmaxAll = fmax;
+  }
+  // column order: by dominant frequency of W_E (then by its magnitude), shared by both matrices so columns line up
+  const F = MATS[0].F;
+  order = Array.from({ length: D }, (_, d) => d);
+  if (sorted) order.sort((x, y) => (F.dom[x] - F.dom[y]) || (F.domMag[y] - F.domMag[x]));
+}
+
+function build() {
+  for (const m of MATS) {
+    const box = document.getElementById('mat-' + m.id);
+    box.innerHTML = `
+      <h2>${m.title}</h2>
+      <div class="row">
+        <div class="col">
+          <div class="sub" id="sub-${m.id}">${m.note}</div>
+          <canvas id="mat-canvas-${m.id}" width="${D * CW}" height="${P * RH}"></canvas>
+          <div class="sub">|DFT| of each column over ${m.rowName}, rows k = 0 (top) … 21; colour = the run's frequency when k is one of them</div>
+          <canvas id="dft-canvas-${m.id}" width="${D * CW}" height="${NF * FH}"></canvas>
+        </div>
+        <div class="side">
+          <h3 id="side-title-${m.id}">hover a column</h3>
+          <canvas id="side-col-${m.id}" width="330" height="110"></canvas>
+          <canvas id="side-dft-${m.id}" width="330" height="90"></canvas>
+          <div id="side-text-${m.id}"></div>
+        </div>
+      </div>`;
+    const mc = document.getElementById('mat-canvas-' + m.id), dc = document.getElementById('dft-canvas-' + m.id);
+    const pick = (e, isDft) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      const col = Math.floor((e.clientX - r.left) / r.width * D), row = Math.floor((e.clientY - r.top) / r.height * (isDft ? NF : P));
+      if (col < 0 || col >= D) return;
+      const d = order[col];
+      const h = { mat: m.id, d, a: isDft ? -1 : row, k: isDft ? row : -1 };
+      if (h.mat !== hover.mat || h.d !== hover.d || h.a !== hover.a || h.k !== hover.k) { hover = h; draw(); }
+    };
+    mc.addEventListener('mousemove', e => pick(e, false)); dc.addEventListener('mousemove', e => pick(e, true));
+    for (const c of [mc, dc]) c.addEventListener('mouseleave', () => { if (hover.mat === m.id) { hover = { mat: null, d: -1, a: -1, k: -1 }; draw(); } });
+  }
+}
+
+function drawMatrix(m) {
+  const c = document.getElementById('mat-canvas-' + m.id), ctx = c.getContext('2d');
+  const img = ctx.createImageData(c.width, c.height), vmax = fixedScale ? m.vmaxAll : m.vmax;
+  for (let col = 0; col < D; col++) {
+    const d = order[col];
+    for (let a = 0; a < P; a++) {
+      const [r, g, b] = divColor(m.M[a * D + d], vmax);
+      for (let y = a * RH; y < (a + 1) * RH; y++) for (let x = col * CW; x < (col + 1) * CW - 1; x++) {
+        const i = (y * c.width + x) * 4; img.data[i] = r; img.data[i + 1] = g; img.data[i + 2] = b; img.data[i + 3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  if (hover.mat === m.id && hover.d >= 0) {
+    const col = order.indexOf(hover.d);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(col * CW + 0.5, 0.5, CW - 1, c.height - 1);
+    if (hover.a >= 0) { ctx.strokeStyle = '#ff0'; ctx.strokeRect(0.5, hover.a * RH + 0.5, c.width - 1, RH - 1); }
+  }
+  // DFT strip
+  const dc = document.getElementById('dft-canvas-' + m.id), dctx = dc.getContext('2d');
+  const dimg = dctx.createImageData(dc.width, dc.height), fmax = fixedScale ? m.fmaxAll : m.fmax;
+  for (let col = 0; col < D; col++) {
+    const d = order[col];
+    for (let k = 0; k < NF; k++) {
+      const [r, g, b] = seqColor(m.F.mag[k * D + d] / (fmax || 1), freqColor(k));
+      for (let y = k * FH; y < (k + 1) * FH - 1; y++) for (let x = col * CW; x < (col + 1) * CW - 1; x++) {
+        const i = (y * dc.width + x) * 4; dimg.data[i] = r; dimg.data[i + 1] = g; dimg.data[i + 2] = b; dimg.data[i + 3] = 255;
+      }
+    }
+  }
+  dctx.putImageData(dimg, 0, 0);
+  dctx.font = '9px monospace'; dctx.textAlign = 'left'; dctx.fillStyle = '#ddd';
+  for (const k of [...new Set([0, 1, ...K, NF - 1])]) dctx.fillText('k=' + k, 2, k * FH + 8);
+  if (hover.mat === m.id && hover.d >= 0) {
+    const col = order.indexOf(hover.d);
+    dctx.strokeStyle = '#fff'; dctx.lineWidth = 1; dctx.strokeRect(col * CW + 0.5, 0.5, CW - 1, dc.height - 1);
+    if (hover.k >= 0) { dctx.strokeStyle = '#ff0'; dctx.strokeRect(0.5, hover.k * FH + 0.5, dc.width - 1, FH - 1); }
+  }
+  document.getElementById('sub-' + m.id).textContent = `${m.note} · colour scale ±${vmax.toFixed(2)}${fixedScale ? ' (fixed over visited steps)' : ''}`;
+}
+
+function drawSide(m) {
+  const title = document.getElementById('side-title-' + m.id), text = document.getElementById('side-text-' + m.id);
+  const cc = document.getElementById('side-col-' + m.id), fc = document.getElementById('side-dft-' + m.id);
+  const cx = cc.getContext('2d'), fx = fc.getContext('2d');
+  cx.clearRect(0, 0, cc.width, cc.height); fx.clearRect(0, 0, fc.width, fc.height);
+  if (hover.mat !== m.id || hover.d < 0) { title.textContent = 'hover a column'; text.textContent = ''; return; }
+  const d = hover.d, dom = m.F.dom[d];
+  title.innerHTML = `column d = ${d} · dominant k = <span style="color:${K.includes(dom) ? PALETTE[K.indexOf(dom) % PALETTE.length] : '#ccc'}">${dom}</span>`;
+  // column as a function of the residue
+  const ml = 30, pw = cc.width - ml - 6, ph = cc.height - 18, vmax = Math.max(1e-6, ...Array.from({ length: P }, (_, a) => Math.abs(m.M[a * D + d])));
+  const X = a => ml + pw * (a + 0.5) / P, Y = v => 4 + (ph / 2) * (1 - v / vmax);
+  cx.strokeStyle = '#333'; cx.beginPath(); cx.moveTo(ml, Y(0)); cx.lineTo(ml + pw, Y(0)); cx.stroke();
+  cx.fillStyle = '#8ab4f8';
+  for (let a = 0; a < P; a++) { const v = m.M[a * D + d]; cx.fillRect(X(a) - 2.5, Math.min(Y(v), Y(0)), 5, Math.abs(Y(v) - Y(0))); }
+  if (hover.a >= 0) { cx.strokeStyle = '#ff0'; cx.strokeRect(X(hover.a) - 3.5, 2, 7, ph + 4); }
+  cx.fillStyle = '#888'; cx.font = '9px monospace'; cx.textAlign = 'right'; cx.fillText(vmax.toFixed(2), ml - 3, 10); cx.fillText((-vmax).toFixed(2), ml - 3, ph + 6);
+  cx.textAlign = 'center'; for (let a = 0; a < P; a += 6) cx.fillText(a, X(a), cc.height - 4);
+  cx.textAlign = 'left'; cx.fillText(`value vs ${m.rowName}`, ml + 2, 10);
+  // its DFT magnitude
+  const fmax = Math.max(1e-6, ...Array.from({ length: NF }, (_, k) => m.F.mag[k * D + d]));
+  const fw = (fc.width - ml - 6) / NF, fh = fc.height - 18;
+  for (let k = 0; k < NF; k++) {
+    const mag = m.F.mag[k * D + d], col = freqColor(k);
+    fx.fillStyle = K.includes(k) ? `rgb(${col.join(',')})` : '#999';
+    fx.fillRect(ml + k * fw + 1, 4 + fh * (1 - mag / fmax), fw - 2, fh * mag / fmax);
+  }
+  if (hover.k >= 0) { fx.strokeStyle = '#ff0'; fx.strokeRect(ml + hover.k * fw + 0.5, 2, fw - 1, fh + 4); }
+  fx.fillStyle = '#888'; fx.font = '9px monospace'; fx.textAlign = 'right'; fx.fillText(fmax.toFixed(1), ml - 3, 10);
+  fx.textAlign = 'center'; for (let k = 0; k < NF; k += 3) fx.fillText(k, ml + (k + 0.5) * fw, fc.height - 4);
+  fx.textAlign = 'left'; fx.fillText('|DFT| vs k', ml + 2, 10);
+  const parts = [];
+  if (hover.a >= 0) parts.push(`${m.rowName} = ${hover.a}: value ${m.M[hover.a * D + d].toFixed(4)}`);
+  if (hover.k >= 0) { const re = m.F.re[hover.k * D + d], im = m.F.im[hover.k * D + d]; parts.push(`k = ${hover.k}: |F| = ${Math.hypot(re, im).toFixed(2)}, phase ${(Math.atan2(im, re) * 180 / Math.PI).toFixed(0)}°`); }
+  const tot = Array.from({ length: NF }, (_, k) => m.F.mag[k * D + d] ** 2 * (k === 0 ? 1 : 2)).reduce((p, q) => p + q, 0);
+  parts.push(`energy at k=${dom}: ${(100 * 2 * m.F.mag[dom * D + d] ** 2 / (tot || 1)).toFixed(0)}% · DC share ${(100 * m.F.mag[d] ** 2 / (tot || 1)).toFixed(0)}%`);
+  text.textContent = parts.join(' · ');
+}
+
+function legend() {
+  const counts = K.map(k => MATS[0].F.dom.filter(x => x === k).length);
+  const other = D - counts.reduce((p, q) => p + q, 0);
+  document.getElementById('legend').innerHTML =
+    `<span>columns of W<sub>E</sub> by dominant frequency:</span>` +
+    K.map((k, i) => `<span style="color:${PALETTE[i % PALETTE.length]}">k=${k}: ${counts[i]}</span>`).join('') +
+    `<span style="color:#999">other k: ${other}</span><span>· matrix colours: <span style="color:#e94560">+</span> / <span style="color:#4a7cff">−</span></span>`;
+}
+
+function draw() {
+  if (!DATA) return;
+  for (const m of MATS) { drawMatrix(m); drawSide(m); }
+  legend();
+}
+
+document.getElementById('sort-btn').addEventListener('click', e => { sorted = !sorted; e.target.classList.toggle('active', sorted); if (DATA) { prepare(); draw(); } });
+document.getElementById('share-btn').addEventListener('click', e => { fixedScale = !fixedScale; e.target.classList.toggle('active', fixedScale); draw(); });
+
+Timeline.init({
+  container: '#timeline', modes: ['embed'],
+  onIndex: index => { K = index.K; document.getElementById('hint').textContent = `mod 43 | d_model 128 | freqs ${K.join(', ')}`; build(); },
+  onData: (step, mode, data) => { DATA = data; prepare(); document.getElementById('info').textContent = `step ${step}`; draw(); },
+});
+</script>
+</body>
+</html>
